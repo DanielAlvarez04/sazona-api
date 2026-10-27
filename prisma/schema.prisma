@@ -1,0 +1,622 @@
+// Naranja Pimienta — Esquema de base de datos (PostgreSQL 16)
+// Prisma 7
+//
+// Notas de diseño:
+// - `Membership` es la única fuente de verdad de la pertenencia usuario ↔ organización.
+// - Un usuario puede tener varios roles dentro de una organización (`Membership.roles`).
+// - La tasa de IVA es un ajuste del negocio (`Organization.taxRate`, 16 % por defecto) y
+//   se aplica a los productos que no tengan una tasa propia (`Product.taxRate`).
+// - Los precios del catálogo son precios finales con IVA incluido (`plan.md` §6.9).
+// - Los estados son enums para que la base de datos rechace valores inválidos.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum Role {
+  ADMIN
+  WAITER
+  KITCHEN
+  CASHIER
+  INVENTORY_MANAGER
+}
+
+enum OrderStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
+
+enum OrderRoundStatus {
+  PENDING
+  PREPARING
+  READY
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  REFUNDED
+}
+
+enum InventoryMovementType {
+  ADJUSTMENT
+  CONSUMPTION
+  RETURN
+}
+
+enum TwoFactorPurpose {
+  LOGIN
+  ENABLE
+}
+
+/// Unidad de medida. La dimensión y el factor a la unidad base viven en código
+/// (`src/common/units.ts`): masa (base g), volumen (base ml) y conteo (base
+/// pieza = UNIT). El catálogo es fijo: no se edita desde la aplicación.
+enum UnitCode {
+  MG
+  G
+  KG
+  OZ
+  LB
+  ML
+  L
+  TSP
+  TBSP
+  CUP
+  FL_OZ
+  GAL
+  UNIT
+  HALF_PIECE
+  PAIR
+  HALF_DOZEN
+  DOZEN
+}
+
+// ============================================================================
+// Identidad y organización
+// ============================================================================
+
+model Organization {
+  id                String   @id @default(cuid())
+  name              String
+  slug              String   @unique
+  domain            String?  @unique // dominio de los usuarios del equipo (ej. naranjapimienta.cafe)
+  taxRate           Decimal  @default(0.16) @db.Decimal(5, 4) // IVA por defecto del negocio (0.16 = 16 %)
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  memberships       Membership[]
+  orders            Order[]
+  payments          Payment[]
+  inventoryMovements InventoryMovement[]
+  auditLogs         AuditLog[]
+  categories        Category[]
+  products          Product[]
+  ingredients       Ingredient[]
+  recipes           Recipe[]
+}
+
+model User {
+  id                     String      @id @default(cuid())
+  email                  String?     @unique
+  username               String?     @unique // login de cuentas internas (minúsculas)
+  passwordHash           String?
+  name                   String?
+  googleId               String?     @unique // `sub` de Google (OpenID Connect)
+  isActive               Boolean     @default(true)
+  emailVerified          Boolean     @default(false)
+  twoFactorEnabled       Boolean     @default(false)
+  onboardedAt            DateTime? // null hasta completar el onboarding
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
+
+  memberships            Membership[]
+  authSessions           AuthSession[]
+  twoFactorCodes         TwoFactorCode[]
+  orders                 Order[]
+  payments               Payment[]   @relation("PaymentUser")
+  confirmedPayments      Payment[]   @relation("PaymentConfirmedBy")
+  inventoryMovements     InventoryMovement[]
+  auditLogs              AuditLog[]
+  emailVerificationToken EmailVerificationToken?
+  passwordResetToken     PasswordResetToken?
+  orderStatusHistories   OrderStatusHistory[]
+
+  @@index([isActive])
+}
+
+model Membership {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  roles          Role[]   @default([WAITER])
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+model AuthSession {
+  id                  String   @id @default(cuid())
+  userId              String
+  refreshTokenHash    String   @unique
+  expiresAt           DateTime // expiración del refresh token actual
+  absoluteExpiresAt   DateTime // expiración absoluta de la sesión (límite de rotación)
+  revokedAt           DateTime?
+  revokedReason       String?  // "LOGOUT", "ROTATED", "REUSE_DETECTED", "PASSWORD_CHANGED"
+  replacedBySessionId String?
+  userAgent           String?
+  ip                  String?
+  lastUsedAt          DateTime?
+  createdAt           DateTime @default(now())
+
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TwoFactorCode {
+  id          String           @id
+  userId      String
+  purpose     TwoFactorPurpose
+  codeHash    String
+  expiresAt   DateTime
+  attempts    Int              @default(0)
+  consumedAt  DateTime?
+  createdAt   DateTime         @default(now())
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, createdAt])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// Catálogo
+// ============================================================================
+
+model Category {
+  id          String   @id @default(cuid())
+  organizationId String
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  products    Product[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model Product {
+  id            String   @id @default(cuid())
+  organizationId String
+  categoryId    String?
+  name          String
+  description   String?
+  sku           String?  // Código interno / importación CSV
+  price         Decimal  @db.Decimal(12, 2) // Precio final con IVA incluido
+  taxRate       Decimal? @db.Decimal(5, 4) // Tasa aplicable; null = no configurada (no se asume ninguna)
+  isActive      Boolean  @default(true)
+  isCombo       Boolean  @default(false)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  category      Category?    @relation(fields: [categoryId], references: [id])
+  variants      ProductVariant[]
+  extras        ProductExtra[]
+  recipes       Recipe[]
+  orderItems    OrderItem[]  @relation("OrderItemProduct")
+  ingredientExclusions ProductIngredientExclusion[]
+  comboComponents ComboComponent[] @relation("ComboComponents")
+  componentOf   ComboComponent[]   @relation("ComboPartOf")
+
+  @@unique([organizationId, sku])
+  @@index([organizationId, isActive])
+  @@index([categoryId])
+}
+
+model ProductVariant {
+  id          String   @id @default(cuid())
+  productId   String
+  name        String   // ej: "Mediano", "Grande", "Sin azúcar"
+  priceAdjust Decimal  @db.Decimal(12, 2) @default(0.0000)
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItems  OrderItem[]
+  recipes     Recipe[]
+  comboComponents ComboComponent[]
+
+  @@index([productId])
+}
+
+model ProductExtra {
+  id          String   @id @default(cuid())
+  productId   String
+  name        String
+  price       Decimal  @db.Decimal(12, 2)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItemExtras OrderItemExtra[]
+  ingredients ProductExtraIngredient[]
+
+  @@index([productId])
+}
+
+// ============================================================================
+// Inventario y recetas
+// ============================================================================
+
+model Ingredient {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  baseUnit       UnitCode @default(UNIT) // Todas las cantidades se guardan en esta unidad
+  currentStock   Decimal  @db.Decimal(12, 4) @default(0.0000)
+  minStock       Decimal  @db.Decimal(12, 4) @default(0.0000)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipeIngredients RecipeIngredient[]
+  inventoryMovements InventoryMovement[]
+  equivalences   IngredientEquivalence[]
+  exclusions     ProductIngredientExclusion[]
+  extraIngredients ProductExtraIngredient[]
+  orderItemExclusions OrderItemExclusion[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive])
+}
+
+/// Equivalencia explícita entre dimensiones distintas para UN ingrediente
+/// (ej. 1 taza de harina = 120 g). Nunca se deduce masa ↔ volumen.
+model IngredientEquivalence {
+  id           String   @id @default(cuid())
+  ingredientId String
+  fromUnit     UnitCode
+  toUnit       UnitCode
+  factor       Decimal  @db.Decimal(12, 6) // 1 fromUnit = factor toUnit
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([ingredientId, fromUnit, toUnit])
+  @@index([ingredientId])
+}
+
+/// Ingredientes que el cliente puede pedir sin incluir ("sin cebolla").
+model ProductIngredientExclusion {
+  id           String   @id @default(cuid())
+  productId    String
+  ingredientId String
+  label        String?
+  createdAt    DateTime @default(now())
+
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, ingredientId])
+  @@index([productId])
+  @@index([ingredientId])
+}
+
+/// Componentes de un combo. No se permiten combos anidados (validación en API).
+model ComboComponent {
+  id                 String   @id @default(cuid())
+  comboId            String
+  componentProductId String
+  componentVariantId String?
+  quantity           Int      @default(1)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  combo              Product        @relation("ComboComponents", fields: [comboId], references: [id], onDelete: Cascade)
+  component          Product        @relation("ComboPartOf", fields: [componentProductId], references: [id], onDelete: Restrict)
+  variant            ProductVariant? @relation(fields: [componentVariantId], references: [id], onDelete: Restrict)
+
+  @@unique([comboId, componentProductId, componentVariantId])
+  @@index([comboId])
+  @@index([componentProductId])
+}
+
+/// Consumo de inventario de un extra (cantidad en la unidad base del ingrediente).
+model ProductExtraIngredient {
+  id             String   @id @default(cuid())
+  productExtraId String
+  ingredientId   String
+  quantity       Decimal  @db.Decimal(12, 4)
+
+  productExtra   ProductExtra @relation(fields: [productExtraId], references: [id], onDelete: Cascade)
+  ingredient     Ingredient   @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([productExtraId, ingredientId])
+  @@index([ingredientId])
+}
+
+model Recipe {
+  id            String   @id @default(cuid())
+  organizationId String
+  productId     String
+  variantId     String? // null = receta base del producto
+  name          String
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product       Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant       ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  ingredients   RecipeIngredient[]
+
+  @@unique([productId, variantId])
+  @@index([organizationId])
+  @@index([variantId])
+}
+
+model RecipeIngredient {
+  id            String   @id @default(cuid())
+  recipeId      String
+  ingredientId  String
+  quantity      Decimal  @db.Decimal(12, 4) // Cantidad en la unidad base del ingrediente
+
+  recipe        Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  ingredient    Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([recipeId, ingredientId])
+  @@index([recipeId])
+  @@index([ingredientId])
+}
+
+model InventoryMovement {
+  id              String   @id @default(cuid())
+  organizationId  String
+  ingredientId    String
+  userId          String?
+  type            InventoryMovementType
+  quantity        Decimal  @db.Decimal(12, 4) // Positivo = entrada, Negativo = salida
+  stockAfter      Decimal? @db.Decimal(12, 4) // Saldo resultante (kardex auditable)
+  reason          String?
+  referenceId     String?  // ID de orden, ronda, etc.
+  referenceType   String?  // "ORDER_ROUND", "ADJUSTMENT", etc.
+  dedupeKey       String?  @unique // idempotencia de consumos
+  createdAt       DateTime @default(now())
+
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ingredient      Ingredient   @relation(fields: [ingredientId], references: [id])
+  // `SetNull`: el kardex se conserva aunque se elimine la cuenta del autor.
+  user            User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([ingredientId])
+  @@index([userId])
+}
+
+// ============================================================================
+// Pedidos y cocina
+// ============================================================================
+
+model Order {
+  id            String   @id @default(cuid())
+  organizationId String
+  tableNumber   String?
+  isTakeaway    Boolean  @default(false)
+  status        OrderStatus @default(OPEN)
+  subtotal      Decimal  @db.Decimal(12, 2) @default(0.0000)
+  taxTotal      Decimal  @db.Decimal(12, 2) @default(0.0000)
+  total         Decimal  @db.Decimal(12, 2) @default(0.0000)
+  idempotencyKey String? @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // `SetNull`: al eliminar la cuenta del usuario el pedido se conserva sin autor.
+  user          User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId        String?
+  rounds        OrderRound[]
+  payments      Payment[]
+
+  @@index([organizationId, status, createdAt])
+}
+
+model OrderRound {
+  id            String   @id @default(cuid())
+  orderId       String
+  status        OrderRoundStatus @default(PENDING)
+  idempotencyKey String? @unique
+  sentAt        DateTime?
+  startedAt     DateTime?
+  readyAt       DateTime?
+  deliveredAt   DateTime?
+  cancelledAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  items         OrderItem[]
+  statusHistory OrderStatusHistory[]
+
+  @@index([orderId])
+  @@index([status, createdAt])
+}
+
+model OrderItem {
+  id            String   @id @default(cuid())
+  orderRoundId  String
+  productId     String
+  productVariantId String?
+  // Copia histórica del catálogo al momento del pedido
+  productName   String
+  variantName   String?
+  productPrice  Decimal  @db.Decimal(12, 2)
+  taxRate       Decimal? @db.Decimal(5, 4)
+  taxAmount     Decimal  @db.Decimal(12, 2) @default(0)
+  quantity      Int      @default(1)
+  notes         String?
+  subtotal      Decimal  @db.Decimal(12, 2)
+
+  orderRound    OrderRound @relation(fields: [orderRoundId], references: [id], onDelete: Cascade)
+  product       Product   @relation("OrderItemProduct", fields: [productId], references: [id], onDelete: Restrict)
+  variant       ProductVariant? @relation(fields: [productVariantId], references: [id])
+  extras        OrderItemExtra[]
+  exclusions    OrderItemExclusion[]
+
+  @@index([orderRoundId])
+  @@index([productId])
+}
+
+model OrderItemExtra {
+  id            String   @id @default(cuid())
+  orderItemId   String
+  productExtraId String?
+  extraName     String
+  extraPrice    Decimal  @db.Decimal(12, 2)
+
+  orderItem     OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  productExtra  ProductExtra? @relation(fields: [productExtraId], references: [id])
+
+  @@index([orderItemId])
+}
+
+/// Ingredientes que el cliente pidió quitar. Se descuentan de la receta al
+/// consumir inventario, para que el descuento coincida con lo servido.
+model OrderItemExclusion {
+  id           String @id @default(cuid())
+  orderItemId  String
+  ingredientId String
+
+  orderItem    OrderItem  @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([orderItemId, ingredientId])
+  @@index([ingredientId])
+}
+
+model OrderStatusHistory {
+  id            String   @id @default(cuid())
+  orderRoundId  String
+  previousStatus String?
+  newStatus     String
+  changedById   String?
+  changedAt     DateTime @default(now())
+  reason        String?
+
+  orderRound    OrderRound @relation(fields: [orderRoundId], references: [id], onDelete: Cascade)
+  // `SetNull`: la traza de estados se conserva sin autor si se borra la cuenta.
+  changedBy     User?    @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([orderRoundId])
+  @@index([changedAt])
+}
+
+// ============================================================================
+// Pagos y auditoría
+// ============================================================================
+
+model Payment {
+  id            String   @id @default(cuid())
+  organizationId String
+  orderId       String
+  userId        String?
+  method        PaymentMethod
+  amount        Decimal  @db.Decimal(12, 2)
+  status        PaymentStatus @default(PENDING)
+  paidAt        DateTime?
+  confirmedAt   DateTime?
+  confirmedById String?
+  idempotencyKey String? @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  // `SetNull`: el pago sobrevive al borrado de la cuenta que lo registró.
+  user          User?    @relation("PaymentUser", fields: [userId], references: [id], onDelete: SetNull)
+  confirmedBy   User?    @relation("PaymentConfirmedBy", fields: [confirmedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status, createdAt])
+  @@index([orderId])
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  organizationId String
+  userId        String?
+  action        String
+  entity        String
+  entityId      String?
+  oldValues     Json?
+  newValues     Json?
+  createdAt     DateTime @default(now())
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // `SetNull`: la auditoría se conserva aunque la cuenta ya no exista.
+  user          User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([userId])
+  @@index([entity, entityId])
+}

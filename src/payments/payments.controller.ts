@@ -1,0 +1,98 @@
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { JwtUser } from '../auth/auth.service';
+import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { PaymentsService } from './payments.service';
+import {
+  CreatePaymentDto,
+  ListPaymentsQueryDto,
+  VoidPaymentDto,
+} from './dto/payments.dto';
+
+@ApiTags('payments')
+@Controller()
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class PaymentsController {
+  constructor(private readonly payments: PaymentsService) {}
+
+  @ApiOperation({ summary: 'Caja: listado de pagos con totales' })
+  @RequirePermissions('reports:read')
+  @Get('payments')
+  list(@CurrentUser() user: JwtUser, @Query() query: ListPaymentsQueryDto) {
+    return this.payments.list(user.organizationId, {
+      from: parseDate(query.from, 'desde'),
+      to: parseDate(query.to, 'hasta'),
+      method: query.method,
+      status: query.status,
+      limit: query.limit,
+      offset: query.offset,
+    });
+  }
+
+  @ApiOperation({ summary: 'Registrar un pago (queda pendiente)' })
+  @RequirePermissions('payments:register')
+  @Post('orders/:id/payments')
+  register(
+    @CurrentUser() user: JwtUser,
+    @Param('id') id: string,
+    @Body() dto: CreatePaymentDto,
+  ) {
+    return this.payments.register(user.organizationId, user.sub, id, dto);
+  }
+
+  @ApiOperation({ summary: 'Confirmar un pago pendiente' })
+  @RequirePermissions('payments:confirm')
+  @Post('payments/:id/confirm')
+  confirm(@CurrentUser() user: JwtUser, @Param('id') id: string) {
+    return this.payments.confirm(user.organizationId, user.sub, id);
+  }
+
+  @ApiOperation({ summary: 'Anular un pago pendiente o reembolsar uno confirmado' })
+  @RequirePermissions('payments:register')
+  @Post('payments/:id/void')
+  voidPayment(
+    @CurrentUser() user: JwtUser,
+    @Param('id') id: string,
+    @Body() dto: VoidPaymentDto,
+  ) {
+    return this.payments.voidPayment(
+      user.organizationId,
+      { id: user.sub, roles: user.roles },
+      id,
+      dto,
+    );
+  }
+
+  @ApiOperation({ summary: 'Cerrar una cuenta pagada' })
+  @RequirePermissions('payments:confirm')
+  @Post('orders/:id/close')
+  close(@CurrentUser() user: JwtUser, @Param('id') id: string) {
+    return this.payments.closeOrder(user.organizationId, user.sub, id);
+  }
+}
+
+function parseDate(value: string | undefined, label: string): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    throw new BadRequestException(`Fecha ${label} inválida`);
+  }
+
+  return date;
+}

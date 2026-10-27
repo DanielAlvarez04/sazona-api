@@ -1,0 +1,128 @@
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { OrderStatus } from '@prisma/client';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { JwtUser } from '../auth/auth.service';
+import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { OrdersService } from './orders.service';
+import {
+  CancelOrderDto,
+  CreateOrderDto,
+  SendRoundDto,
+  TransitionRoundDto,
+} from './dto/orders.dto';
+
+@ApiTags('orders')
+@Controller('orders')
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class OrdersController {
+  constructor(private readonly orders: OrdersService) {}
+
+  @ApiOperation({ summary: 'Listar cuentas (pedidos) de la organización' })
+  @Get()
+  list(
+    @CurrentUser() user: JwtUser,
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.orders.list(user.organizationId, {
+      status: parseStatus(status),
+      limit: parseInteger(limit, 50),
+      offset: parseInteger(offset, 0),
+    });
+  }
+
+  @ApiOperation({ summary: 'Abrir una cuenta (borrador)' })
+  @RequirePermissions('orders:draft')
+  @Post()
+  create(@CurrentUser() user: JwtUser, @Body() dto: CreateOrderDto) {
+    return this.orders.create(user.organizationId, user.sub, dto);
+  }
+
+  @ApiOperation({ summary: 'Detalle de una cuenta con rondas e historial' })
+  @Get(':id')
+  get(@CurrentUser() user: JwtUser, @Param('id') id: string) {
+    return this.orders.get(user.organizationId, id);
+  }
+
+  @ApiOperation({ summary: 'Enviar una ronda (comanda) a cocina' })
+  @RequirePermissions('orders:send')
+  @Post(':id/rounds')
+  sendRound(
+    @CurrentUser() user: JwtUser,
+    @Param('id') id: string,
+    @Body() dto: SendRoundDto,
+  ) {
+    return this.orders.sendRound(user.organizationId, user.sub, id, dto);
+  }
+
+  @ApiOperation({
+    summary: 'Cambiar el estado de una ronda (inicia consumo de inventario)',
+  })
+  @RequirePermissions('kitchen:transition')
+  @Patch(':id/rounds/:roundId/status')
+  transition(
+    @CurrentUser() user: JwtUser,
+    @Param('id') id: string,
+    @Param('roundId') roundId: string,
+    @Body() dto: TransitionRoundDto,
+  ) {
+    return this.orders.transitionRound(
+      user.organizationId,
+      user.sub,
+      id,
+      roundId,
+      dto,
+    );
+  }
+
+  @ApiOperation({ summary: 'Cancelar una cuenta abierta' })
+  @RequirePermissions('orders:draft')
+  @Patch(':id/cancel')
+  cancel(
+    @CurrentUser() user: JwtUser,
+    @Param('id') id: string,
+    @Body() dto: CancelOrderDto,
+  ) {
+    return this.orders.cancelOrder(user.organizationId, user.sub, id, dto);
+  }
+}
+
+function parseStatus(value?: string): OrderStatus | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (!Object.values(OrderStatus).includes(value as OrderStatus)) {
+    throw new BadRequestException('Estado de pedido inválido');
+  }
+
+  return value as OrderStatus;
+}
+
+function parseInteger(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed)) {
+    throw new BadRequestException('Se esperaba un número entero');
+  }
+
+  return parsed;
+}

@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "skills": {
+    "nestjs-best-practices": {
+      "source": "kadajett/agent-nestjs-skills",
+      "sourceType": "autoskills-registry",
+      "computedHash": "733132088381b9a8fa587c4e81ff14d823cd13f76cbc2162b56a617803836d89"
+    },
+    "nodejs-backend-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "autoskills-registry",
+      "computedHash": "ec099fc7d7ece12e8a89c24b12eff36f27dd243db15c5a70f3df8406ec9c738e"
+    },
+    "nodejs-best-practices": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "autoskills-registry",
+      "computedHash": "2c543ab51c9c4093c8a94aa615f39ca55d93835816aeeaa5bbd89261d85c584c"
+    },
+    "prisma-cli": {
+      "source": "prisma/skills",
+      "sourceType": "autoskills-registry",
+      "computedHash": "251460308049626fd8561fad649354ecdfbef71f9f243fd7705c3e61cb7878f2"
+    },
+    "prisma-client-api": {
+      "source": "prisma/skills",
+      "sourceType": "autoskills-registry",
+      "computedHash": "e4a709bc916691bcaa1ad6bac6d00cd388c2093857c065a699a0d046f237311d"
+    },
+    "prisma-database-setup": {
+      "source": "prisma/skills",
+      "sourceType": "autoskills-registry",
+      "computedHash": "d5de5d8c2750b1078caaddaacac147aba3f54f4d5653c0a543904c7a1820fc77"
+    },
+    "prisma-postgres": {
+      "source": "prisma/skills",
+      "sourceType": "autoskills-registry",
+      "computedHash": "bb2725342147ce5251a4e618118700e224cd5e5472b6e85bb1f12918f6a985f0"
+    },
+    "typescript-advanced-types": {
+      "source": "wshobson/agents",
+      "sourceType": "autoskills-registry",
+      "computedHash": "cb5d18bc19191b388cc49c15ff98dcbc714fa343373d078be00833e8a18ef291"
+    },
+    "zod": {
+      "source": "pproenca/dot-skills",
+      "sourceType": "autoskills-registry",
+      "computedHash": "2e6455bb2c68a46f88db0fef1151cdb4d0a50b57b6a0cdbe7fa3b68641adf45b"
+    }
+  }
+}
