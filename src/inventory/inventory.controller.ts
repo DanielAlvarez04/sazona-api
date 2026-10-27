@@ -185,6 +185,18 @@ export class InventoryController {
     return this.inventory.adjust(user.organizationId, user.sub, dto);
   }
 
+  @ApiOperation({ summary: 'Listar categorías de ingredientes (core + personalizadas)' })
+  @Get('ingredient-categories')
+  listIngredientCategories(@CurrentUser() user: JwtUser) {
+    return this.inventory.listIngredientCategories(user.organizationId);
+  }
+
+  @ApiOperation({ summary: 'Listar ubicaciones de ingredientes (core + personalizadas)' })
+  @Get('ingredient-locations')
+  listIngredientLocations(@CurrentUser() user: JwtUser) {
+    return this.inventory.listIngredientLocations(user.organizationId);
+  }
+
   @ApiOperation({ summary: 'Ingredientes por debajo del stock mínimo' })
   @Get('alerts')
   alerts(@CurrentUser() user: JwtUser) {

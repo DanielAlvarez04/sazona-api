@@ -23,8 +23,31 @@ export class ImportIngredientRowDto {
   name!: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  sku?: string;
+
+  @IsOptional()
   @IsEnum(UnitCode)
   baseUnit?: UnitCode;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string;
+
+  @IsOptional()
+  @IsString()
+  locationId?: string;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  unitCost?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  maxStock?: number;
 
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 4 })
@@ -46,13 +69,36 @@ export class CreateIngredientDto {
   name!: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  sku?: string;
+
+  @IsOptional()
   @IsEnum(UnitCode)
   baseUnit?: UnitCode;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string;
+
+  @IsOptional()
+  @IsString()
+  locationId?: string;
 
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0)
   minStock?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  maxStock?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  unitCost?: number;
 
   /** Stock inicial (se registra como movimiento de ajuste auditable). */
   @IsOptional()
@@ -78,13 +124,36 @@ export class UpdateIngredientDto {
   name?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  sku?: string;
+
+  @IsOptional()
   @IsEnum(UnitCode)
   baseUnit?: UnitCode;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string;
+
+  @IsOptional()
+  @IsString()
+  locationId?: string;
 
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0)
   minStock?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  maxStock?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  unitCost?: number;
 
   @IsOptional()
   @IsBoolean()

@@ -13,6 +13,34 @@ const TEST_PASSWORD = 'Naranja123!';
 const ORG_NAME = 'Naranja Pimienta';
 const ORG_SLUG = 'naranja-pimienta';
 
+// Categorías core del sistema (isCore = true, no editables por el usuario)
+const CORE_INGREDIENT_CATEGORIES = [
+  { name: 'Frutas y verduras', description: 'Productos frescos de origen vegetal', sortOrder: 1 },
+  { name: 'Abarrotes y secos', description: 'Alimentos no perecederos, granos, harinas, conservas', sortOrder: 2 },
+  { name: 'Lácteos y huevo', description: 'Leche, quesos, yogures, huevos y derivados', sortOrder: 3 },
+  { name: 'Carnes y proteínas', description: 'Carnes rojas, aves, pescados, mariscos, legumbres', sortOrder: 4 },
+  { name: 'Café, té y chocolate', description: 'Café en grano/molido, tés, cacao, chocolate', sortOrder: 5 },
+  { name: 'Bebidas e ingredientes para bebidas', description: 'Jugos, refrescos, alcoholes, syrups, bases', sortOrder: 6 },
+  { name: 'Aceites, salsas y condimentos', description: 'Aceites, vinagres, salsas, especias, adobos', sortOrder: 7 },
+  { name: 'Panadería y tortillas', description: 'Pan, tortillas, masas, productos de panadería', sortOrder: 8 },
+  { name: 'Desechables y empaques', description: 'Vasos, cubiertos, servilletas, bolsas, film', sortOrder: 9 },
+  { name: 'Limpieza e higiene', description: 'Detergentes, desinfectantes, jabones, papel', sortOrder: 10 },
+  { name: 'Material de cocina', description: 'Utensilios, ollas, sartenes, cuchillos, equipos', sortOrder: 11 },
+  { name: 'Otros insumos', description: 'Todo lo que no encaje en las categorías anteriores', sortOrder: 12 },
+];
+
+// Ubicaciones core del sistema (isCore = true, no editables por el usuario)
+const CORE_INGREDIENT_LOCATIONS = [
+  { name: 'Almacén seco', description: 'Zona de almacenamiento a temperatura ambiente', sortOrder: 1 },
+  { name: 'Refrigerador', description: 'Cámara fría / refrigerador principal (2-8°C)', sortOrder: 2 },
+  { name: 'Congelador', description: 'Congelador / freezer (-18°C o menos)', sortOrder: 3 },
+  { name: 'Cocina / Área de preparación', description: 'Zona de trabajo y mise en place', sortOrder: 4 },
+  { name: 'Barra de bebidas', description: 'Área de servicio de bebidas y café', sortOrder: 5 },
+  { name: 'Almacén de desechables', description: 'Stock de vasos, cubiertos, servilletas, empaques', sortOrder: 6 },
+  { name: 'Área de limpieza', description: 'Productos de limpieza e higiene', sortOrder: 7 },
+  { name: 'Bodega auxiliar', description: 'Almacén secundario / overflow', sortOrder: 8 },
+];
+
 async function main() {
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL no está definida. Revisa api/.env');
@@ -52,6 +80,41 @@ async function main() {
       create: { userId: user.id, organizationId: org.id, roles: ['ADMIN'] },
     });
 
+    // 4. Categorías core de ingredientes (isCore = true, no editables)
+    for (const cat of CORE_INGREDIENT_CATEGORIES) {
+      await prisma.ingredientCategory.upsert({
+        where: { organizationId_name: { organizationId: org.id, name: cat.name } },
+        update: { isCore: true, isActive: true, sortOrder: cat.sortOrder },
+        create: { organizationId: org.id, ...cat, isCore: true },
+      });
+    }
+
+    // 5. Ubicaciones core de ingredientes (isCore = true, no editables)
+    for (const loc of CORE_INGREDIENT_LOCATIONS) {
+      await prisma.ingredientLocation.upsert({
+        where: { organizationId_name: { organizationId: org.id, name: loc.name } },
+        update: { isCore: true, isActive: true, sortOrder: loc.sortOrder },
+        create: { organizationId: org.id, ...loc, isCore: true },
+      });
+    }
+
+    // Obtener IDs de categorías y ubicaciones para asignar a ingredientes
+    const ingredientCategories = await prisma.ingredientCategory.findMany({
+      where: { organizationId: org.id },
+      select: { id: true, name: true },
+    });
+    const ingredientCategoryMap = Object.fromEntries(
+      ingredientCategories.map((c) => [c.name, c.id])
+    );
+
+    const ingredientLocations = await prisma.ingredientLocation.findMany({
+      where: { organizationId: org.id },
+      select: { id: true, name: true },
+    });
+    const ingredientLocationMap = Object.fromEntries(
+      ingredientLocations.map((l) => [l.name, l.id])
+    );
+
     // ------------------------------------------------------------------------
     // Catálogo ficticio de la cafetería (no es el menú real)
     // ------------------------------------------------------------------------
@@ -69,60 +132,100 @@ async function main() {
         baseUnit: UnitCode.KG,
         currentStock: '12',
         minStock: '2',
+        categoryId: ingredientCategoryMap['Café, té y chocolate'],
+        locationId: ingredientLocationMap['Almacén seco'],
+        unitCost: '120',
+        maxStock: '50',
       }),
       leche: await ensureIngredient(prisma, org.id, {
         name: 'Leche entera',
         baseUnit: UnitCode.L,
         currentStock: '24',
         minStock: '5',
+        categoryId: ingredientCategoryMap['Lácteos y huevo'],
+        locationId: ingredientLocationMap['Refrigerador'],
+        unitCost: '25',
+        maxStock: '50',
       }),
       agua: await ensureIngredient(prisma, org.id, {
         name: 'Agua filtrada',
         baseUnit: UnitCode.L,
         currentStock: '100',
         minStock: '10',
+        categoryId: ingredientCategoryMap['Bebidas e ingredientes para bebidas'],
+        locationId: ingredientLocationMap['Almacén seco'],
+        unitCost: '5',
+        maxStock: '200',
       }),
       harina: await ensureIngredient(prisma, org.id, {
         name: 'Harina de trigo',
         baseUnit: UnitCode.KG,
         currentStock: '25',
         minStock: '5',
+        categoryId: ingredientCategoryMap['Abarrotes y secos'],
+        locationId: ingredientLocationMap['Almacén seco'],
+        unitCost: '18',
+        maxStock: '50',
       }),
       azucar: await ensureIngredient(prisma, org.id, {
         name: 'Azúcar',
         baseUnit: UnitCode.KG,
         currentStock: '15',
         minStock: '3',
+        categoryId: ingredientCategoryMap['Abarrotes y secos'],
+        locationId: ingredientLocationMap['Almacén seco'],
+        unitCost: '22',
+        maxStock: '30',
       }),
       mantequilla: await ensureIngredient(prisma, org.id, {
         name: 'Mantequilla',
         baseUnit: UnitCode.KG,
         currentStock: '8',
         minStock: '2',
+        categoryId: ingredientCategoryMap['Lácteos y huevo'],
+        locationId: ingredientLocationMap['Refrigerador'],
+        unitCost: '85',
+        maxStock: '20',
       }),
       chocolate: await ensureIngredient(prisma, org.id, {
         name: 'Chocolate en polvo',
         baseUnit: UnitCode.KG,
         currentStock: '6',
         minStock: '1.5',
+        categoryId: ingredientCategoryMap['Café, té y chocolate'],
+        locationId: ingredientLocationMap['Almacén seco'],
+        unitCost: '280',
+        maxStock: '15',
       }),
       vaso: await ensureIngredient(prisma, org.id, {
         name: 'Vaso 12 oz',
         baseUnit: UnitCode.UNIT,
         currentStock: '400',
         minStock: '100',
+        categoryId: ingredientCategoryMap['Desechables y empaques'],
+        locationId: ingredientLocationMap['Almacén de desechables'],
+        unitCost: '0.8',
+        maxStock: '1000',
       }),
       huevo: await ensureIngredient(prisma, org.id, {
         name: 'Huevo',
         baseUnit: UnitCode.UNIT,
         currentStock: '60',
         minStock: '12',
+        categoryId: ingredientCategoryMap['Lácteos y huevo'],
+        locationId: ingredientLocationMap['Refrigerador'],
+        unitCost: '3.5',
+        maxStock: '120',
       }),
       matcha: await ensureIngredient(prisma, org.id, {
         name: 'Matcha en polvo',
         baseUnit: UnitCode.KG,
         currentStock: '1.2',
         minStock: '0.3',
+        categoryId: ingredientCategoryMap['Café, té y chocolate'],
+        locationId: ingredientLocationMap['Almacén seco'],
+        unitCost: '850',
+        maxStock: '5',
       }),
     };
 
@@ -336,6 +439,11 @@ interface IngredientSeed {
   baseUnit: UnitCode;
   currentStock: string;
   minStock: string;
+  sku?: string;
+  categoryId?: string;
+  locationId?: string;
+  unitCost?: string;
+  maxStock?: string;
 }
 
 async function ensureIngredient(
@@ -351,9 +459,14 @@ async function ensureIngredient(
     create: {
       organizationId,
       name: data.name,
+      sku: data.sku,
       baseUnit: data.baseUnit,
       currentStock: data.currentStock,
       minStock: data.minStock,
+      maxStock: data.maxStock,
+      unitCost: data.unitCost,
+      categoryId: data.categoryId,
+      locationId: data.locationId,
     },
   });
 }

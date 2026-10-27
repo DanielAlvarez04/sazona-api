@@ -63,6 +63,8 @@ export class InventoryService {
       },
       include: {
         _count: { select: { recipeIngredients: true } },
+        category: { select: { id: true, name: true, isCore: true } },
+        location: { select: { id: true, name: true, isCore: true } },
       },
       orderBy: { name: 'asc' },
     });
@@ -86,6 +88,10 @@ export class InventoryService {
     const name = dto.name.trim();
     await this.assertNameAvailable(organizationId, name);
 
+    if (dto.sku) {
+      await this.assertSkuAvailable(organizationId, dto.sku.trim());
+    }
+
     const initialStock = toQuantity(dto.currentStock ?? 0);
 
     const ingredient = await this.prisma.$transaction(async (tx) => {
@@ -93,8 +99,13 @@ export class InventoryService {
         data: {
           organizationId,
           name,
+          sku: dto.sku?.trim(),
           baseUnit: dto.baseUnit ?? UnitCode.UNIT,
           minStock: toQuantity(dto.minStock ?? 0),
+          maxStock: dto.maxStock !== undefined ? toQuantity(dto.maxStock) : null,
+          unitCost: dto.unitCost !== undefined ? toQuantity(dto.unitCost) : null,
+          categoryId: dto.categoryId || null,
+          locationId: dto.locationId || null,
         },
       });
 
@@ -167,10 +178,11 @@ export class InventoryService {
    * Importa ingredientes desde CSV.
    *
    * Formato esperado (cabecera opcional):
-   * name,baseUnit,currentStock,minStock
+   * name,sku,baseUnit,categoryId,locationId,unitCost,maxStock,currentStock,minStock
    *
    * - baseUnit: código de unidad (G, KG, ML, L, UNIT, etc.)
-   * - currentStock/minStock: números (0 por defecto)
+   * - currentStock/minStock/maxStock/unitCost: números (0 por defecto)
+   * - categoryId/locationId: IDs de categoría y ubicación (opcional)
    * - Las unidades deben ser códigos válidos del enum UnitCode
    */
   async importIngredientsFromCsv(
@@ -188,8 +200,25 @@ export class InventoryService {
     }
 
     // Detectar si la primera línea es cabecera
-    const hasHeader = /name|baseunit|stock|min/i.test(lines[0]);
+    const hasHeader = /name|baseunit|stock|min|sku|category|location|cost/i.test(lines[0]);
     const startIndex = hasHeader ? 1 : 0;
+
+    // Cargar mapas de categorías y ubicaciones
+    const categories = await this.prisma.ingredientCategory.findMany({
+      where: { organizationId, isActive: true },
+      select: { id: true, name: true },
+    });
+    const categoryMap = Object.fromEntries(
+      categories.map((c) => [c.name.toLowerCase(), c.id])
+    );
+
+    const locations = await this.prisma.ingredientLocation.findMany({
+      where: { organizationId, isActive: true },
+      select: { id: true, name: true },
+    });
+    const locationMap = Object.fromEntries(
+      locations.map((l) => [l.name.toLowerCase(), l.id])
+    );
 
     const dtos: ImportIngredientRowDto[] = [];
 
@@ -209,16 +238,51 @@ export class InventoryService {
         );
       }
 
-      const baseUnit = (cols[1]?.toUpperCase() ?? 'UNIT') as UnitCode;
-      if (baseUnit && !Object.values(UnitCode).includes(baseUnit)) {
+      const sku = cols[1]?.trim() || undefined;
+      const baseUnit = (cols[2]?.toUpperCase() ?? 'UNIT') as UnitCode;
+      const categoryName = cols[3]?.toLowerCase().trim();
+      const locationName = cols[4]?.toLowerCase().trim();
+      const unitCost = cols[5] ? Number(cols[5].replace(',', '.')) : undefined;
+      const maxStock = cols[6] ? Number(cols[6].replace(',', '.')) : undefined;
+      const currentStock = cols[7] ? Number(cols[7].replace(',', '.')) : 0;
+      const minStock = cols[8] ? Number(cols[8].replace(',', '.')) : 0;
+
+      if (!name || name.length < 2) {
         throw new BadRequestException(
-          `Línea ${i + 1}: unidad "${cols[1]}" no válida. Unidades válidas: ${Object.values(UnitCode).join(', ')}`,
+          `Línea ${i + 1}: nombre de ingrediente inválido`,
         );
       }
 
-      const currentStock = cols[2] ? Number(cols[2].replace(',', '.')) : 0;
-      const minStock = cols[3] ? Number(cols[3].replace(',', '.')) : 0;
+      if (baseUnit && !Object.values(UnitCode).includes(baseUnit)) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: unidad "${cols[2]}" no válida. Unidades válidas: ${Object.values(UnitCode).join(', ')}`,
+        );
+      }
 
+      const categoryId = categoryName ? categoryMap[categoryName] : undefined;
+      if (categoryName && !categoryId) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: categoría "${cols[3]}" no encontrada`,
+        );
+      }
+
+      const locationId = locationName ? locationMap[locationName] : undefined;
+      if (locationName && !locationId) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: ubicación "${cols[4]}" no encontrada`,
+        );
+      }
+
+      if (unitCost !== undefined && (!Number.isFinite(unitCost) || unitCost < 0)) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: costo unitario inválido`,
+        );
+      }
+      if (maxStock !== undefined && (!Number.isFinite(maxStock) || maxStock < 0)) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: stock máximo inválido`,
+        );
+      }
       if (!Number.isFinite(currentStock) || currentStock < 0) {
         throw new BadRequestException(
           `Línea ${i + 1}: stock inicial inválido`,
@@ -232,7 +296,12 @@ export class InventoryService {
 
       dtos.push({
         name: name.trim(),
+        sku: sku || undefined,
         baseUnit,
+        categoryId,
+        locationId,
+        unitCost,
+        maxStock,
         currentStock,
         minStock,
       });
@@ -257,6 +326,9 @@ export class InventoryService {
     // Validar que no existan en la BD
     for (const dto of dtos) {
       await this.assertNameAvailable(organizationId, dto.name);
+      if (dto.sku) {
+        await this.assertSkuAvailable(organizationId, dto.sku);
+      }
     }
 
     // Crear todos en una transacción
@@ -283,6 +355,13 @@ export class InventoryService {
       }
     }
 
+    if (dto.sku !== undefined) {
+      const sku = dto.sku.trim();
+      if (sku && sku.toLowerCase() !== ingredient.sku?.toLowerCase()) {
+        await this.assertSkuAvailable(organizationId, sku, ingredient.id);
+      }
+    }
+
     if (dto.baseUnit && dto.baseUnit !== ingredient.baseUnit) {
       const [inRecipes, movements] = await Promise.all([
         this.prisma.recipeIngredient.count({
@@ -304,9 +383,16 @@ export class InventoryService {
       where: { id: ingredient.id },
       data: {
         name: dto.name?.trim(),
+        sku: dto.sku?.trim() || null,
         baseUnit: dto.baseUnit,
         minStock:
           dto.minStock === undefined ? undefined : toQuantity(dto.minStock),
+        maxStock:
+          dto.maxStock === undefined ? undefined : toQuantity(dto.maxStock),
+        unitCost:
+          dto.unitCost === undefined ? undefined : toQuantity(dto.unitCost),
+        categoryId: dto.categoryId || null,
+        locationId: dto.locationId || null,
         isActive: dto.isActive,
       },
     });
@@ -477,6 +563,36 @@ export class InventoryService {
       .sort((a, b) => b.deficit.comparedTo(a.deficit));
   }
 
+  async listIngredientCategories(organizationId: string) {
+    return this.prisma.ingredientCategory.findMany({
+      where: { organizationId, isActive: true },
+      orderBy: { sortOrder: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        isCore: true,
+        isActive: true,
+        sortOrder: true,
+      },
+    });
+  }
+
+  async listIngredientLocations(organizationId: string) {
+    return this.prisma.ingredientLocation.findMany({
+      where: { organizationId, isActive: true },
+      orderBy: { sortOrder: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        isCore: true,
+        isActive: true,
+        sortOrder: true,
+      },
+    });
+  }
+
   // --------------------------------------------------------------------------
   // Equivalencias entre dimensiones
   // --------------------------------------------------------------------------
@@ -583,6 +699,25 @@ export class InventoryService {
 
     if (existing) {
       throw new ConflictException('Ya existe un ingrediente con ese nombre');
+    }
+  }
+
+  private async assertSkuAvailable(
+    organizationId: string,
+    sku: string,
+    excludeId?: string,
+  ) {
+    const existing = await this.prisma.ingredient.findFirst({
+      where: {
+        organizationId,
+        sku: { equals: sku, mode: 'insensitive' },
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (existing) {
+      throw new ConflictException('Ya existe un ingrediente con ese SKU');
     }
   }
 
