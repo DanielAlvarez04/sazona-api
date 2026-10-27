@@ -77,6 +77,20 @@ export class InventoryController {
     );
   }
 
+  @ApiOperation({ summary: 'Importar ingredientes desde CSV' })
+  @RequirePermissions('inventory:manage')
+  @Post('ingredients/import-csv')
+  async importCsv(
+    @CurrentUser() user: JwtUser,
+    @Body() body: { csv: string },
+  ) {
+    return this.inventory.importIngredientsFromCsv(
+      user.organizationId,
+      user.sub,
+      body.csv,
+    );
+  }
+
   @ApiOperation({ summary: 'Editar ingrediente (nombre, unidad mínima, stock mínimo)' })
   @RequirePermissions('inventory:manage')
   @Patch('ingredients/:id')

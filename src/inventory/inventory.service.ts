@@ -16,6 +16,7 @@ import {
   CreateAdjustmentDto,
   CreateEquivalenceDto,
   CreateIngredientDto,
+  ImportIngredientRowDto,
   UpdateIngredientDto,
 } from './dto/inventory.dto';
 
@@ -153,6 +154,112 @@ export class InventoryService {
       await this.assertNameAvailable(organizationId, dto.name.trim());
     }
 
+    const created = [];
+
+    for (const dto of dtos) {
+      created.push(await this.createIngredient(organizationId, userId, dto));
+    }
+
+    return created;
+  }
+
+  /**
+   * Importa ingredientes desde CSV.
+   *
+   * Formato esperado (cabecera opcional):
+   * name,baseUnit,currentStock,minStock
+   *
+   * - baseUnit: código de unidad (G, KG, ML, L, UNIT, etc.)
+   * - currentStock/minStock: números (0 por defecto)
+   * - Las unidades deben ser códigos válidos del enum UnitCode
+   */
+  async importIngredientsFromCsv(
+    organizationId: string,
+    userId: string,
+    csvText: string,
+  ) {
+    const lines = csvText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (lines.length === 0) {
+      throw new BadRequestException('El CSV está vacío');
+    }
+
+    // Detectar si la primera línea es cabecera
+    const hasHeader = /name|baseunit|stock|min/i.test(lines[0]);
+    const startIndex = hasHeader ? 1 : 0;
+
+    const dtos: ImportIngredientRowDto[] = [];
+
+    for (let i = startIndex; i < lines.length; i++) {
+      const line = lines[i];
+      // Parse CSV simple (sin comillas anidadas)
+      const cols = line.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+
+      if (cols.length < 1 || cols[0] === '') {
+        continue; // Saltar líneas vacías
+      }
+
+      const name = cols[0];
+      if (!name || name.length < 2) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: nombre de ingrediente inválido`,
+        );
+      }
+
+      const baseUnit = (cols[1]?.toUpperCase() ?? 'UNIT') as UnitCode;
+      if (baseUnit && !Object.values(UnitCode).includes(baseUnit)) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: unidad "${cols[1]}" no válida. Unidades válidas: ${Object.values(UnitCode).join(', ')}`,
+        );
+      }
+
+      const currentStock = cols[2] ? Number(cols[2].replace(',', '.')) : 0;
+      const minStock = cols[3] ? Number(cols[3].replace(',', '.')) : 0;
+
+      if (!Number.isFinite(currentStock) || currentStock < 0) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: stock inicial inválido`,
+        );
+      }
+      if (!Number.isFinite(minStock) || minStock < 0) {
+        throw new BadRequestException(
+          `Línea ${i + 1}: stock mínimo inválido`,
+        );
+      }
+
+      dtos.push({
+        name: name.trim(),
+        baseUnit,
+        currentStock,
+        minStock,
+      });
+    }
+
+    if (dtos.length === 0) {
+      throw new BadRequestException('No se encontraron ingredientes válidos en el CSV');
+    }
+
+    // Validar duplicados en la lista
+    const seen = new Set<string>();
+    for (const dto of dtos) {
+      const key = dto.name.toLowerCase();
+      if (seen.has(key)) {
+        throw new BadRequestException(
+          `"${dto.name}" está repetido en el CSV`,
+        );
+      }
+      seen.add(key);
+    }
+
+    // Validar que no existan en la BD
+    for (const dto of dtos) {
+      await this.assertNameAvailable(organizationId, dto.name);
+    }
+
+    // Crear todos en una transacción
     const created = [];
 
     for (const dto of dtos) {

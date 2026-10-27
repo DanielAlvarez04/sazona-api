@@ -16,6 +16,27 @@ import {
 import { Type } from 'class-transformer';
 import { UnitCode } from '@prisma/client';
 
+export class ImportIngredientRowDto {
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  name!: string;
+
+  @IsOptional()
+  @IsEnum(UnitCode)
+  baseUnit?: UnitCode;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  currentStock?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  minStock?: number;
+}
+
 const DECIMAL_PATTERN = /^-?\d{1,9}(\.\d{1,6})?$/;
 
 export class CreateIngredientDto {
