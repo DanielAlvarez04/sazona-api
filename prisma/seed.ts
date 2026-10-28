@@ -3,7 +3,7 @@
 // Uso: npm run prisma:seed
 import { config } from 'dotenv';
 import { hash } from 'argon2';
-import { PrismaClient, UnitCode } from '@prisma/client';
+import { PrismaClient, Prisma, UnitCode } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 config();
@@ -82,25 +82,37 @@ async function main() {
 
     // 4. Categorías core de ingredientes (isCore = true, no editables)
     for (const cat of CORE_INGREDIENT_CATEGORIES) {
-      await prisma.ingredientCategory.upsert({
-        where: { organizationId_name: { organizationId: org.id, name: cat.name } },
-        update: { isCore: true, isActive: true, sortOrder: cat.sortOrder },
-        create: { organizationId: org.id, ...cat, isCore: true },
-      });
+      try {
+        await prisma.ingredientCategory.create({
+          data: { organizationId: null as any, ...cat, isCore: true },
+        });
+      } catch (e) {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+          // Duplicate core category, ignore
+        } else {
+          throw e;
+        }
+      }
     }
 
     // 5. Ubicaciones core de ingredientes (isCore = true, no editables)
     for (const loc of CORE_INGREDIENT_LOCATIONS) {
-      await prisma.ingredientLocation.upsert({
-        where: { organizationId_name: { organizationId: org.id, name: loc.name } },
-        update: { isCore: true, isActive: true, sortOrder: loc.sortOrder },
-        create: { organizationId: org.id, ...loc, isCore: true },
-      });
+      try {
+        await prisma.ingredientLocation.create({
+          data: { organizationId: null as any, ...loc, isCore: true },
+        });
+      } catch (e) {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+          // Duplicate core location, ignore
+        } else {
+          throw e;
+        }
+      }
     }
 
     // Obtener IDs de categorías y ubicaciones para asignar a ingredientes
     const ingredientCategories = await prisma.ingredientCategory.findMany({
-      where: { organizationId: org.id },
+      where: { OR: [{ organizationId: org.id }, { organizationId: null as any }] },
       select: { id: true, name: true },
     });
     const ingredientCategoryMap = Object.fromEntries(
@@ -108,7 +120,7 @@ async function main() {
     );
 
     const ingredientLocations = await prisma.ingredientLocation.findMany({
-      where: { organizationId: org.id },
+      where: { OR: [{ organizationId: org.id }, { organizationId: null as any }] },
       select: { id: true, name: true },
     });
     const ingredientLocationMap = Object.fromEntries(

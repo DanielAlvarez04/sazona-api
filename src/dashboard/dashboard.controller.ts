@@ -8,6 +8,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CurrentBranch } from '../common/decorators/current-branch.decorator';
 import { JwtUser } from '../auth/auth.service';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -28,11 +29,16 @@ export class DashboardController {
    */
   @ApiOperation({ summary: 'Resumen del panel principal' })
   @Get('dashboard')
-  overview(@CurrentUser() user: JwtUser, @Query('days') days?: string) {
+  overview(
+    @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
+    @Query('days') days?: string,
+  ) {
     return this.dashboard.overview(
       user.organizationId,
       user.roles,
       parseDays(days),
+      branchId,
     );
   }
 
@@ -41,6 +47,7 @@ export class DashboardController {
   @Get('reports/sales')
   sales(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
@@ -49,6 +56,7 @@ export class DashboardController {
       user.organizationId,
       range.from,
       range.to,
+      branchId,
     );
   }
 
@@ -57,6 +65,7 @@ export class DashboardController {
   @Get('reports/inventory')
   inventory(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
@@ -65,6 +74,7 @@ export class DashboardController {
       user.organizationId,
       range.from,
       range.to,
+      branchId,
     );
   }
 
@@ -73,6 +83,7 @@ export class DashboardController {
   @Get('reports/kitchen')
   kitchen(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
@@ -81,6 +92,7 @@ export class DashboardController {
       user.organizationId,
       range.from,
       range.to,
+      branchId,
     );
   }
 }

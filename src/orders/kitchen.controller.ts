@@ -3,6 +3,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { map, type Observable } from 'rxjs';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CurrentBranch } from '../common/decorators/current-branch.decorator';
 import { JwtUser } from '../auth/auth.service';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { OrdersService } from './orders.service';
@@ -19,8 +20,11 @@ export class KitchenController {
 
   @ApiOperation({ summary: 'Rondas activas para el tablero de cocina' })
   @Get('rounds')
-  rounds(@CurrentUser() user: JwtUser) {
-    return this.orders.kitchenRounds(user.organizationId);
+  rounds(
+    @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
+  ) {
+    return this.orders.kitchenRounds(user.organizationId, branchId);
   }
 
   /**

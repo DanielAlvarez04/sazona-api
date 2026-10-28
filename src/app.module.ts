@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { validateEnv } from './config/env.validation';
 import { PrismaModule } from './prisma/prisma.module';
@@ -8,8 +8,10 @@ import { MailModule } from './mail/mail.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { OrganizationsModule } from './organizations/organizations.module';
+import { BranchesModule } from './branches/branches.module';
 import { HealthModule } from './health/health.module';
 import { CommonModule } from './common/common.module';
+import { BranchContextInterceptor } from './branches/branch-context.interceptor';
 import { CatalogModule } from './catalog/catalog.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { OrdersModule } from './orders/orders.module';
@@ -33,6 +35,7 @@ import { OriginGuard } from './common/guards/origin.guard';
     AuthModule,
     UsersModule,
     OrganizationsModule,
+    BranchesModule,
     CatalogModule,
     InventoryModule,
     OrdersModule,
@@ -49,6 +52,10 @@ import { OriginGuard } from './common/guards/origin.guard';
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: BranchContextInterceptor,
     },
   ],
 })

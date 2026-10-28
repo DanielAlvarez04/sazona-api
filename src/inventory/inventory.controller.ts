@@ -16,6 +16,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { InventoryMovementType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CurrentBranch } from '../common/decorators/current-branch.decorator';
 import { JwtUser } from '../auth/auth.service';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -42,15 +43,20 @@ export class InventoryController {
   @Get('ingredients')
   listIngredients(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Query('search') search?: string,
     @Query('includeInactive') includeInactive?: string,
     @Query('lowStockOnly') lowStockOnly?: string,
   ) {
-    return this.inventory.listIngredients(user.organizationId, {
-      search,
-      includeInactive: includeInactive === 'true',
-      lowStockOnly: lowStockOnly === 'true',
-    });
+    return this.inventory.listIngredients(
+      user.organizationId,
+      {
+        search,
+        includeInactive: includeInactive === 'true',
+        lowStockOnly: lowStockOnly === 'true',
+      },
+      branchId,
+    );
   }
 
   @ApiOperation({ summary: 'Crear ingrediente' })
@@ -58,9 +64,15 @@ export class InventoryController {
   @Post('ingredients')
   createIngredient(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Body() dto: CreateIngredientDto,
   ) {
-    return this.inventory.createIngredient(user.organizationId, user.sub, dto);
+    return this.inventory.createIngredient(
+      user.organizationId,
+      user.sub,
+      dto,
+      branchId,
+    );
   }
 
   @ApiOperation({ summary: 'Crear varios ingredientes a la vez' })
@@ -68,12 +80,14 @@ export class InventoryController {
   @Post('ingredients/bulk')
   createIngredients(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Body() dto: CreateIngredientsBulkDto,
   ) {
     return this.inventory.createIngredients(
       user.organizationId,
       user.sub,
       dto.ingredients,
+      branchId,
     );
   }
 
@@ -82,12 +96,14 @@ export class InventoryController {
   @Post('ingredients/import-csv')
   async importCsv(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Body() body: { csv: string },
   ) {
     return this.inventory.importIngredientsFromCsv(
       user.organizationId,
       user.sub,
       body.csv,
+      branchId,
     );
   }
 
@@ -161,6 +177,7 @@ export class InventoryController {
   @Get('movements')
   listMovements(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Query('ingredientId') ingredientId?: string,
     @Query('type') type?: string,
     @Query('from') from?: string,
@@ -168,21 +185,29 @@ export class InventoryController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    return this.inventory.listMovements(user.organizationId, {
-      ingredientId,
-      type: parseMovementType(type),
-      from: parseDate(from, 'from'),
-      to: parseDate(to, 'to'),
-      limit: parseInteger(limit, 50),
-      offset: parseInteger(offset, 0),
-    });
+    return this.inventory.listMovements(
+      user.organizationId,
+      {
+        ingredientId,
+        type: parseMovementType(type),
+        from: parseDate(from, 'from'),
+        to: parseDate(to, 'to'),
+        limit: parseInteger(limit, 50),
+        offset: parseInteger(offset, 0),
+      },
+      branchId,
+    );
   }
 
   @ApiOperation({ summary: 'Registrar ajuste manual de stock (auditable)' })
   @RequirePermissions('inventory:adjust')
   @Post('movements')
-  adjust(@CurrentUser() user: JwtUser, @Body() dto: CreateAdjustmentDto) {
-    return this.inventory.adjust(user.organizationId, user.sub, dto);
+  adjust(
+    @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
+    @Body() dto: CreateAdjustmentDto,
+  ) {
+    return this.inventory.adjust(user.organizationId, user.sub, dto, branchId);
   }
 
   @ApiOperation({ summary: 'Listar categorías de ingredientes (core + personalizadas)' })
@@ -199,8 +224,11 @@ export class InventoryController {
 
   @ApiOperation({ summary: 'Ingredientes por debajo del stock mínimo' })
   @Get('alerts')
-  alerts(@CurrentUser() user: JwtUser) {
-    return this.inventory.listAlerts(user.organizationId);
+  alerts(
+    @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
+  ) {
+    return this.inventory.listAlerts(user.organizationId, branchId);
   }
 }
 

@@ -13,6 +13,11 @@ export interface IngredientQuantityInput {
   unit?: UnitCode;
 }
 
+export interface ResolvedIngredientQuantity {
+  ingredientId: string;
+  quantity: Prisma.Decimal;
+}
+
 /**
  * Valida ingredientes de la organización y normaliza sus cantidades a la
  * unidad base. Se usa en recetas y en el consumo de extras.
@@ -24,12 +29,9 @@ export class IngredientQuantitiesService {
     private readonly quantities: QuantityConverter,
   ) {}
 
-  async resolve(organizationId: string, input: IngredientQuantityInput[]) {
+  async resolve(organizationId: string | null, input: IngredientQuantityInput[]): Promise<ResolvedIngredientQuantity[]> {
     const seen = new Set<string>();
-    const result: Array<{
-      ingredientId: string;
-      quantity: Prisma.Decimal;
-    }> = [];
+    const result: ResolvedIngredientQuantity[] = [];
 
     for (const item of input) {
       if (seen.has(item.ingredientId)) {
@@ -65,7 +67,10 @@ export class IngredientQuantitiesService {
         );
       }
 
-      result.push({ ingredientId: ingredient.id, quantity });
+      result.push({
+        ingredientId: ingredient.id,
+        quantity,
+      });
     }
 
     return result;

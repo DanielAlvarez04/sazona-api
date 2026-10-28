@@ -31,10 +31,13 @@ const userSelect = {
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list(organizationId: string) {
+  async list(organizationId: string | null) {
     const memberships = await this.prisma.membership.findMany({
       where: { organizationId },
-      include: { user: { select: userSelect } },
+      include: {
+        user: { select: userSelect },
+        branch: { select: { id: true, name: true } },
+      },
       orderBy: { createdAt: 'asc' },
     });
 
@@ -48,6 +51,8 @@ export class UsersService {
       twoFactorEnabled: membership.user.twoFactorEnabled,
       googleLinked: Boolean(membership.user.googleId),
       roles: membership.roles,
+      branchId: membership.branchId,
+      branchName: membership.branch?.name ?? null,
       createdAt: membership.createdAt,
     }));
   }
@@ -109,7 +114,10 @@ export class UsersService {
    * en `a.perez@naranjapimienta.cafe` y, si también, añade un número. Sin
    * dominio configurado mantiene el formato antiguo (`ana`, `a.perez`).
    */
-  async suggestUsername(organizationId: string, rawName: string) {
+  async suggestUsername(organizationId: string | null, rawName: string) {
+    if (!organizationId) {
+      return { username: '', domain: null };
+    }
     const organization = await this.prisma.organization.findUnique({
       where: { id: organizationId },
       select: { domain: true },
@@ -140,7 +148,7 @@ export class UsersService {
    * El acceso es por usuario + contraseña; el correo es opcional y sólo se usa
    * para 2FA y recuperación. No se reutilizan cuentas de otras organizaciones.
    */
-  async create(organizationId: string, dto: CreateUserDto) {
+  async create(organizationId: string | null, dto: CreateUserDto) {
     const username = normalizeUsername(dto.username);
 
     if (!isValidUsername(username)) {
@@ -166,6 +174,7 @@ export class UsersService {
 
     // Combinar nombre y apellido para guardar en el campo `name`
     const fullName = [dto.name?.trim(), dto.surname?.trim()].filter(Boolean).join(' ');
+    const branchId = await this.resolveBranchId(organizationId, dto.branchId);
 
     return this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
@@ -184,7 +193,8 @@ export class UsersService {
       const membership = await tx.membership.create({
         data: {
           userId: user.id,
-          organizationId,
+          organizationId: organizationId,
+          branchId,
           roles: dto.roles,
         },
       });
@@ -195,17 +205,21 @@ export class UsersService {
         email: user.email,
         name: user.name,
         roles: membership.roles,
+        branchId: membership.branchId,
         googleLinked: false,
       };
     });
   }
 
   async update(
-    organizationId: string,
+    organizationId: string | null,
     userId: string,
     dto: UpdateUserDto,
     actorId: string,
   ) {
+    if (!organizationId) {
+      throw new NotFoundException('Usuario no encontrado en la organización');
+    }
     const membership = await this.prisma.membership.findUnique({
       where: { userId_organizationId: { userId, organizationId } },
       include: { user: { select: userSelect } },
@@ -243,6 +257,10 @@ export class UsersService {
     }
 
     const passwordHash = dto.password ? await hash(dto.password) : undefined;
+    const branchId =
+      dto.branchId !== undefined
+        ? await this.resolveBranchId(organizationId, dto.branchId)
+        : undefined;
 
     // El nombre visible se compone de nombre + apellido, igual que en el alta.
     // Si solo llega el apellido, se conserva el nombre de pila actual.
@@ -278,6 +296,7 @@ export class UsersService {
         data: {
           roles: dto.roles,
           isActive: dto.isActive,
+          ...(branchId !== undefined ? { branchId } : {}),
         },
       });
 
@@ -287,18 +306,23 @@ export class UsersService {
         email: membership.user.email,
         name: nextName !== undefined ? nextName : membership.user.name,
         roles: updated.roles,
+        branchId: updated.branchId,
         isActive: updated.isActive,
       };
     });
   }
 
-  async deactivate(organizationId: string, userId: string, actorId: string) {
+  async deactivate(organizationId: string | null, userId: string, actorId: string) {
+    if (!organizationId) {
+      throw new NotFoundException('Usuario no encontrado en la organización');
+    }
     if (userId === actorId) {
       throw new BadRequestException('No puedes desactivar tu propia cuenta');
     }
 
     const membership = await this.prisma.membership.findUnique({
       where: { userId_organizationId: { userId, organizationId } },
+      include: { user: { select: userSelect } },
     });
 
     if (!membership) {
@@ -329,13 +353,17 @@ export class UsersService {
    * movimientos de inventario, auditoría): sus claves foráneas quedan en
    * `NULL` vía `onDelete: SetNull`, nunca en cascada.
    */
-  async deleteMembership(organizationId: string, userId: string, actorId: string) {
+  async deleteMembership(organizationId: string | null, userId: string, actorId: string) {
+    if (!organizationId) {
+      throw new NotFoundException('Usuario no encontrado en la organización');
+    }
     if (userId === actorId) {
       throw new BadRequestException('No puedes eliminarte a ti mismo de la organización');
     }
 
     const membership = await this.prisma.membership.findUnique({
       where: { userId_organizationId: { userId, organizationId } },
+      include: { user: { select: userSelect } },
     });
 
     if (!membership) {
@@ -357,10 +385,13 @@ export class UsersService {
    * `deleteMembership`.
    */
   async deleteMemberships(
-    organizationId: string,
+    organizationId: string | null,
     userIds: string[],
     actorId: string,
   ) {
+    if (!organizationId) {
+      return { ok: true, deletedCount: 0 };
+    }
     const targets = [...new Set(userIds)].filter((userId) => userId !== actorId);
     let deletedCount = 0;
 
@@ -411,7 +442,10 @@ export class UsersService {
    *
    * Los pedidos, pagos, movimientos y auditoría que crearon se conservan.
    */
-  async purgeDeletedUsers(organizationId: string) {
+  async purgeDeletedUsers(organizationId: string | null) {
+    if (!organizationId) {
+      return { ok: true, deletedCount: 0 };
+    }
     const memberships = await this.prisma.membership.findMany({
       where: { organizationId, isActive: false },
       select: { id: true, userId: true },
@@ -424,10 +458,40 @@ export class UsersService {
     return { ok: true, deletedCount: memberships.length };
   }
 
+  /** Valida que la sucursal pertenezca a la organización y esté activa. */
+  private async resolveBranchId(
+    organizationId: string | null,
+    raw?: string,
+  ): Promise<string | null> {
+    const value = raw?.trim();
+
+    if (!value) {
+      return null;
+    }
+
+    if (!organizationId) {
+      throw new NotFoundException('Organización no encontrada');
+    }
+
+    const branch = await this.prisma.branch.findFirst({
+      where: { id: value, organizationId, isActive: true },
+      select: { id: true },
+    });
+
+    if (!branch) {
+      throw new BadRequestException('La sucursal no existe o está inactiva');
+    }
+
+    return branch.id;
+  }
+
   private async assertAnotherAdminExists(
-    organizationId: string,
+    organizationId: string | null,
     excludeUserId: string,
   ) {
+    if (!organizationId) {
+      throw new BadRequestException('La organización debe conservar al menos un administrador activo');
+    }
     const admins = await this.prisma.membership.count({
       where: {
         organizationId,
@@ -445,7 +509,7 @@ export class UsersService {
   }
 
   private async assertNotLastActiveAdmin(
-    organizationId: string,
+    organizationId: string | null,
     membership: { userId: string; roles: Role[] },
   ) {
     if (!membership.roles.includes(Role.ADMIN)) {

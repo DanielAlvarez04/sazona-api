@@ -16,7 +16,10 @@ import { UpdateOrganizationDto } from './dto/update-organization.dto';
 export class OrganizationsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async current(organizationId: string) {
+  async current(organizationId: string | null) {
+    if (!organizationId) {
+      throw new NotFoundException('Organización no encontrada');
+    }
     const organization = await this.prisma.organization.findUnique({
       where: { id: organizationId },
     });
@@ -54,11 +57,15 @@ export class OrganizationsService {
     return { domain, available: true };
   }
 
-  async update(organizationId: string, dto: UpdateOrganizationDto) {
+  async update(organizationId: string | null, dto: UpdateOrganizationDto) {
     const data: {
       name?: string;
       domain?: string;
       taxRate?: Prisma.Decimal;
+      businessType?: string;
+      serviceTypes?: string[];
+      goals?: string[];
+      hasBranches?: boolean;
     } = {};
 
     if (dto.name !== undefined) {
@@ -93,6 +100,25 @@ export class OrganizationsService {
       data.taxRate = new Prisma.Decimal(dto.taxRate);
     }
 
+    if (dto.businessType !== undefined) {
+      data.businessType = dto.businessType;
+    }
+
+    if (dto.serviceTypes !== undefined) {
+      data.serviceTypes = dto.serviceTypes;
+    }
+
+    if (dto.goals !== undefined) {
+      data.goals = dto.goals;
+    }
+
+    if (dto.hasBranches !== undefined) {
+      data.hasBranches = dto.hasBranches;
+    }
+
+    if (!organizationId) {
+      throw new NotFoundException('Organización no encontrada');
+    }
     const organization = await this.prisma.organization.update({
       where: { id: organizationId },
       data,
@@ -105,6 +131,10 @@ export class OrganizationsService {
       domain: organization.domain,
       taxRate: organization.taxRate.toString(),
       isActive: organization.isActive,
+      businessType: organization.businessType,
+      serviceTypes: organization.serviceTypes,
+      goals: organization.goals,
+      hasBranches: organization.hasBranches,
     };
   }
 }

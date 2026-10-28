@@ -48,4 +48,9 @@ export class CreateUserDto {
   @ArrayNotEmpty()
   @IsEnum(Role, { each: true })
   roles!: Role[];
+
+  /** Sucursal principal del empleado; vacío = todas las sucursales. */
+  @IsOptional()
+  @IsString()
+  branchId?: string;
 }

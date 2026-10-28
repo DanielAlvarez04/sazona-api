@@ -10,7 +10,7 @@ import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 export class CategoriesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list(organizationId: string, includeInactive = false) {
+  list(organizationId: string | null, includeInactive = false) {
     return this.prisma.category.findMany({
       where: {
         organizationId,
@@ -21,7 +21,7 @@ export class CategoriesService {
     });
   }
 
-  async create(organizationId: string, dto: CreateCategoryDto) {
+  async create(organizationId: string | null, dto: CreateCategoryDto) {
     const name = dto.name.trim();
     await this.assertNameAvailable(organizationId, name);
 
@@ -35,7 +35,7 @@ export class CategoriesService {
     });
   }
 
-  async update(organizationId: string, id: string, dto: UpdateCategoryDto) {
+  async update(organizationId: string | null, id: string, dto: UpdateCategoryDto) {
     const category = await this.find(organizationId, id);
 
     if (dto.name !== undefined) {
@@ -59,7 +59,7 @@ export class CategoriesService {
     });
   }
 
-  async deactivate(organizationId: string, id: string) {
+  async deactivate(organizationId: string | null, id: string) {
     const category = await this.find(organizationId, id);
 
     const activeProducts = await this.prisma.product.count({
@@ -78,7 +78,7 @@ export class CategoriesService {
     });
   }
 
-  private async find(organizationId: string, id: string) {
+  private async find(organizationId: string | null, id: string) {
     const category = await this.prisma.category.findFirst({
       where: { id, organizationId },
     });
@@ -91,7 +91,7 @@ export class CategoriesService {
   }
 
   private async assertNameAvailable(
-    organizationId: string,
+    organizationId: string | null,
     name: string,
     excludeId?: string,
   ) {

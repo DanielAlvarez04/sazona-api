@@ -40,4 +40,9 @@ export class UpdateUserDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  /** Sucursal principal; cadena vacía = acceso a todas las sucursales. */
+  @IsOptional()
+  @IsString()
+  branchId?: string;
 }

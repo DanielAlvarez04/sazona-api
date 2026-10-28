@@ -32,8 +32,16 @@ export class DashboardService {
    * - Todo se agrega en el servidor y filtrado por `organizationId`
    *   (`plan.md` §6.10); el frontend no calcula cifras de negocio.
    */
-  async overview(organizationId: string, roles: Role[], days = 7) {
+  async overview(
+    organizationId: string | null,
+    roles: Role[],
+    days = 7,
+    branchId: string | null = null,
+  ) {
     const money = rolesHavePermission(roles, 'reports:read');
+    // Con sucursal activa todo se limita a ese local; sin ella se muestra el
+    // consolidado de la organización.
+    const scope = branchId ? { branchId } : {};
     const range = Math.min(Math.max(days, 1), 90);
     const now = new Date();
     const todayStart = startOfDay(now);
@@ -54,6 +62,7 @@ export class DashboardService {
       this.prisma.payment.findMany({
         where: {
           organizationId,
+          ...scope,
           status: PaymentStatus.CONFIRMED,
           confirmedAt: { gte: todayStart },
         },
@@ -62,6 +71,7 @@ export class DashboardService {
       this.prisma.payment.findMany({
         where: {
           organizationId,
+          ...scope,
           status: PaymentStatus.CONFIRMED,
           confirmedAt: { gte: since },
         },
@@ -70,17 +80,18 @@ export class DashboardService {
       this.prisma.order.count({
         where: {
           organizationId,
+          ...scope,
           createdAt: { gte: todayStart },
           status: { not: OrderStatus.CANCELLED },
         },
       }),
       this.prisma.order.findMany({
-        where: { organizationId, status: OrderStatus.OPEN },
+        where: { organizationId, ...scope, status: OrderStatus.OPEN },
         select: { total: true },
       }),
       this.prisma.orderRound.findMany({
         where: {
-          order: { organizationId, status: OrderStatus.OPEN },
+          order: { organizationId, ...scope, status: OrderStatus.OPEN },
           status: { in: ACTIVE_ROUNDS },
         },
         select: { status: true, sentAt: true },
@@ -93,10 +104,13 @@ export class DashboardService {
           baseUnit: true,
           currentStock: true,
           minStock: true,
+          ...(branchId
+            ? { branchStocks: { where: { branchId }, select: { quantity: true } } }
+            : {}),
         },
       }),
       this.prisma.order.findMany({
-        where: { organizationId },
+        where: { organizationId, ...scope },
         orderBy: { createdAt: 'desc' },
         take: 6,
         select: {
@@ -106,6 +120,7 @@ export class DashboardService {
           status: true,
           total: true,
           createdAt: true,
+          branch: { select: { id: true, name: true } },
           user: { select: { name: true, username: true } },
           _count: { select: { rounds: true } },
         },
@@ -115,7 +130,7 @@ export class DashboardService {
         where: {
           orderRound: {
             status: { not: OrderRoundStatus.CANCELLED },
-            order: { organizationId, createdAt: { gte: since } },
+            order: { organizationId, ...scope, createdAt: { gte: since } },
           },
         },
         _sum: { quantity: true, subtotal: true },
@@ -126,14 +141,14 @@ export class DashboardService {
         where: {
           orderRound: {
             status: { not: OrderRoundStatus.CANCELLED },
-            order: { organizationId, createdAt: { gte: todayStart } },
+            order: { organizationId, ...scope, createdAt: { gte: todayStart } },
           },
         },
         _sum: { quantity: true, taxAmount: true },
       }),
       this.prisma.orderRound.findMany({
         where: {
-          order: { organizationId, createdAt: { gte: since } },
+          order: { organizationId, ...scope, createdAt: { gte: since } },
           startedAt: { not: null },
           readyAt: { not: null },
         },
@@ -168,14 +183,26 @@ export class DashboardService {
     }
 
     const lowStock = ingredients
-      .filter((ingredient) => ingredient.currentStock.lte(ingredient.minStock))
+      .map((ingredient) => {
+        const branchStock = branchId
+          ? (ingredient as { branchStocks?: Array<{ quantity: Prisma.Decimal }> })
+              .branchStocks?.[0]?.quantity
+          : undefined;
+
+        return {
+          id: ingredient.id,
+          name: ingredient.name,
+          baseUnit: ingredient.baseUnit,
+          currentStock: Number(
+            branchId ? (branchStock ?? 0) : ingredient.currentStock,
+          ),
+          minStock: Number(ingredient.minStock),
+        };
+      })
+      .filter((ingredient) => ingredient.currentStock <= ingredient.minStock)
       .map((ingredient) => ({
-        id: ingredient.id,
-        name: ingredient.name,
-        baseUnit: ingredient.baseUnit,
-        currentStock: Number(ingredient.currentStock),
-        minStock: Number(ingredient.minStock),
-        deficit: Number(ingredient.minStock.minus(ingredient.currentStock)),
+        ...ingredient,
+        deficit: Number((ingredient.minStock - ingredient.currentStock).toFixed(4)),
       }))
       .sort((a, b) => b.deficit - a.deficit);
 
@@ -266,16 +293,25 @@ export class DashboardService {
         createdAt: order.createdAt.toISOString(),
         rounds: order._count.rounds,
         user: order.user?.name ?? order.user?.username ?? null,
+        branch: order.branch?.name ?? null,
       })),
     };
   }
 
   /** Reporte de ventas: totales, métodos de pago, serie diaria y productos. */
-  async salesReport(organizationId: string, from: Date, to: Date) {
+  async salesReport(
+    organizationId: string | null,
+    from: Date,
+    to: Date,
+    branchId: string | null = null,
+  ) {
+    const scope = branchId ? { branchId } : {};
+
     const [payments, topProducts, orders] = await Promise.all([
       this.prisma.payment.findMany({
         where: {
           organizationId,
+          ...scope,
           status: PaymentStatus.CONFIRMED,
           confirmedAt: { gte: from, lte: to },
         },
@@ -291,7 +327,7 @@ export class DashboardService {
         where: {
           orderRound: {
             status: { not: OrderRoundStatus.CANCELLED },
-            order: { organizationId, createdAt: { gte: from, lte: to } },
+            order: { organizationId, ...scope, createdAt: { gte: from, lte: to } },
           },
         },
         _sum: { quantity: true, subtotal: true },
@@ -301,6 +337,7 @@ export class DashboardService {
       this.prisma.order.count({
         where: {
           organizationId,
+          ...scope,
           createdAt: { gte: from, lte: to },
           status: { not: OrderStatus.CANCELLED },
         },
@@ -373,27 +410,39 @@ export class DashboardService {
   }
 
   /** Reporte de inventario: movimientos por tipo, consumo y alertas. */
-  async inventoryReport(organizationId: string, from: Date, to: Date) {
-    const [movements, ingredients] = await Promise.all([
-      this.prisma.inventoryMovement.findMany({
-        where: { organizationId, createdAt: { gte: from, lte: to } },
-        select: {
-          type: true,
-          quantity: true,
-          ingredient: { select: { name: true, baseUnit: true } },
-        },
-      }),
-      this.prisma.ingredient.findMany({
-        where: { organizationId, isActive: true },
-        select: {
-          id: true,
-          name: true,
-          baseUnit: true,
-          currentStock: true,
-          minStock: true,
-        },
-      }),
-    ]);
+  async inventoryReport(
+    organizationId: string | null,
+    from: Date,
+    to: Date,
+    branchId: string | null = null,
+  ) {
+    const scope = branchId ? { branchId } : {};
+
+    const movements = (await this.prisma.inventoryMovement.findMany({
+      where: {
+        organizationId: organizationId!,
+        ...scope,
+        createdAt: { gte: from, lte: to },
+      },
+      select: {
+        type: true,
+        quantity: true,
+        ingredient: { select: { name: true, baseUnit: true } },
+      },
+    })) as any[];
+    const ingredients = await this.prisma.ingredient.findMany({
+      where: { organizationId, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        baseUnit: true,
+        currentStock: true,
+        minStock: true,
+        ...(branchId
+          ? { branchStocks: { where: { branchId }, select: { quantity: true } } }
+          : {}),
+      },
+    });
 
     const byType = new Map<InventoryMovementType, { count: number; quantity: number }>();
     const consumption = new Map<
@@ -420,14 +469,26 @@ export class DashboardService {
     }
 
     const lowStock = ingredients
-      .filter((ingredient) => ingredient.currentStock.lte(ingredient.minStock))
+      .map((ingredient) => {
+        const branchStock = branchId
+          ? (ingredient as { branchStocks?: Array<{ quantity: Prisma.Decimal }> })
+              .branchStocks?.[0]?.quantity
+          : undefined;
+
+        return {
+          id: ingredient.id,
+          name: ingredient.name,
+          baseUnit: ingredient.baseUnit,
+          currentStock: Number(
+            branchId ? (branchStock ?? 0) : ingredient.currentStock,
+          ),
+          minStock: Number(ingredient.minStock),
+        };
+      })
+      .filter((ingredient) => ingredient.currentStock <= ingredient.minStock)
       .map((ingredient) => ({
-        id: ingredient.id,
-        name: ingredient.name,
-        baseUnit: ingredient.baseUnit,
-        currentStock: Number(ingredient.currentStock),
-        minStock: Number(ingredient.minStock),
-        deficit: Number(ingredient.minStock.minus(ingredient.currentStock)),
+        ...ingredient,
+        deficit: Number((ingredient.minStock - ingredient.currentStock).toFixed(4)),
       }))
       .sort((a, b) => b.deficit - a.deficit);
 
@@ -448,9 +509,20 @@ export class DashboardService {
   }
 
   /** Reporte de cocina: volumen, tiempos medios y productos preparados. */
-  async kitchenReport(organizationId: string, from: Date, to: Date) {
+  async kitchenReport(
+    organizationId: string | null,
+    from: Date,
+    to: Date,
+    branchId: string | null = null,
+  ) {
     const rounds = await this.prisma.orderRound.findMany({
-      where: { order: { organizationId, createdAt: { gte: from, lte: to } } },
+      where: {
+        order: {
+          organizationId,
+          ...(branchId ? { branchId } : {}),
+          createdAt: { gte: from, lte: to },
+        },
+      },
       select: {
         status: true,
         sentAt: true,

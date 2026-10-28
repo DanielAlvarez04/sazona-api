@@ -91,7 +91,7 @@ export class ProductsService {
     private readonly ingredientQuantities: IngredientQuantitiesService,
   ) {}
 
-  list(organizationId: string, filters: ProductFilters = {}) {
+  list(organizationId: string | null, filters: ProductFilters = {}) {
     const search = filters.search?.trim();
 
     return this.prisma.product.findMany({
@@ -118,7 +118,7 @@ export class ProductsService {
     });
   }
 
-  async findOne(organizationId: string, id: string) {
+  async findOne(organizationId: string | null, id: string) {
     const product = await this.prisma.product.findFirst({
       where: { id, organizationId },
       include: productDetailInclude,
@@ -131,7 +131,7 @@ export class ProductsService {
     return product;
   }
 
-  async create(organizationId: string, dto: CreateProductDto) {
+  async create(organizationId: string | null, dto: CreateProductDto) {
     const name = dto.name.trim();
 
     if (dto.categoryId) {
@@ -235,7 +235,7 @@ export class ProductsService {
     return this.findOne(organizationId, product.id);
   }
 
-  async update(organizationId: string, id: string, dto: UpdateProductDto) {
+  async update(organizationId: string | null, id: string, dto: UpdateProductDto) {
     const product = await this.getProduct(organizationId, id);
 
     if (dto.categoryId !== undefined && dto.categoryId !== null) {
@@ -296,7 +296,7 @@ export class ProductsService {
     return this.findOne(organizationId, product.id);
   }
 
-  async deactivate(organizationId: string, id: string) {
+  async deactivate(organizationId: string | null, id: string) {
     const product = await this.getProduct(organizationId, id);
 
     const usedInCombos = await this.prisma.comboComponent.count({
@@ -325,7 +325,7 @@ export class ProductsService {
   // --------------------------------------------------------------------------
 
   async createVariant(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     dto: CreateVariantDto,
   ) {
@@ -350,7 +350,7 @@ export class ProductsService {
   }
 
   async updateVariant(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     variantId: string,
     dto: UpdateVariantDto,
@@ -385,7 +385,7 @@ export class ProductsService {
   }
 
   async deactivateVariant(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     variantId: string,
   ) {
@@ -418,7 +418,7 @@ export class ProductsService {
   // --------------------------------------------------------------------------
 
   async createExtra(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     dto: CreateExtraDto,
   ) {
@@ -450,7 +450,7 @@ export class ProductsService {
   }
 
   async updateExtra(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     extraId: string,
     dto: UpdateExtraDto,
@@ -503,7 +503,7 @@ export class ProductsService {
   }
 
   async deactivateExtra(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     extraId: string,
   ) {
@@ -529,7 +529,7 @@ export class ProductsService {
   // --------------------------------------------------------------------------
 
   async replaceExclusions(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     exclusions: ExclusionInputDto[],
   ) {
@@ -559,7 +559,7 @@ export class ProductsService {
   }
 
   async replaceComboComponents(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     components: ComboComponentInputDto[],
   ) {
@@ -602,7 +602,7 @@ export class ProductsService {
   // Validaciones
   // --------------------------------------------------------------------------
 
-  private async getProduct(organizationId: string, id: string) {
+  private async getProduct(organizationId: string | null, id: string) {
     const product = await this.prisma.product.findFirst({
       where: { id, organizationId },
     });
@@ -626,7 +626,7 @@ export class ProductsService {
     return variant;
   }
 
-  private async assertCategory(organizationId: string, categoryId: string) {
+  private async assertCategory(organizationId: string | null, categoryId: string) {
     const category = await this.prisma.category.findFirst({
       where: { id: categoryId, organizationId },
     });
@@ -643,7 +643,7 @@ export class ProductsService {
   }
 
   private async assertSkuAvailable(
-    organizationId: string,
+    organizationId: string | null,
     sku: string,
     excludeId?: string,
   ) {
@@ -683,14 +683,14 @@ export class ProductsService {
   }
 
   private async resolveExtraIngredients(
-    organizationId: string,
+    organizationId: string | null,
     input: ExtraIngredientInputDto[],
   ) {
     return this.ingredientQuantities.resolve(organizationId, input);
   }
 
   private async validateExclusions(
-    organizationId: string,
+    organizationId: string | null,
     input: ExclusionInputDto[],
   ) {
     const seen = new Set<string>();
@@ -723,7 +723,7 @@ export class ProductsService {
   }
 
   private async validateComboComponents(
-    organizationId: string,
+    organizationId: string | null,
     comboId: string | null,
     input: ComboComponentInputDto[],
   ) {

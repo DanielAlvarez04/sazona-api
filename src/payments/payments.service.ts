@@ -65,12 +65,17 @@ export class PaymentsService {
    * Es una consulta de lectura: los importes se agregan en la base de datos y
    * nunca se recalculan en el cliente (`plan.md` §6.8).
    */
-  async list(organizationId: string, filters: PaymentFilters = {}) {
+  async list(
+    organizationId: string | null,
+    filters: PaymentFilters = {},
+    branchId: string | null = null,
+  ) {
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
     const offset = Math.max(filters.offset ?? 0, 0);
 
     const where: Prisma.PaymentWhereInput = {
       organizationId,
+      ...(branchId ? { branchId } : {}),
       ...(filters.method ? { method: filters.method } : {}),
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.from || filters.to
@@ -146,7 +151,7 @@ export class PaymentsService {
 
   /** Registra un pago en estado PENDIENTE sobre una cuenta abierta. */
   async register(
-    organizationId: string,
+    organizationId: string | null,
     userId: string,
     orderId: string,
     dto: CreatePaymentDto,
@@ -185,6 +190,7 @@ export class PaymentsService {
     return this.prisma.payment.create({
       data: {
         organizationId,
+        branchId: order.branchId,
         orderId,
         userId,
         method: dto.method,
@@ -205,7 +211,7 @@ export class PaymentsService {
    * (`plan.md` §6.8). Es idempotente: confirmar dos veces devuelve el mismo
    * pago sin duplicar el ingreso.
    */
-  async confirm(organizationId: string, userId: string, paymentId: string) {
+  async confirm(organizationId: string | null, userId: string, paymentId: string) {
     const payment = await this.prisma.payment.findFirst({
       where: { id: paymentId, organizationId },
       include: { order: { select: { id: true, status: true, total: true } } },
@@ -299,7 +305,7 @@ export class PaymentsService {
    * - Nunca se borra ni se sobrescribe un pago histórico.
    */
   async voidPayment(
-    organizationId: string,
+    organizationId: string | null,
     actor: PaymentActor,
     paymentId: string,
     dto: VoidPaymentDto = {},
@@ -367,7 +373,7 @@ export class PaymentsService {
    * por pagos confirmados. El saldo se calcula en el servidor: el cliente no
    * decide si una cuenta está pagada (`plan.md` §5).
    */
-  async closeOrder(organizationId: string, userId: string, orderId: string) {
+  async closeOrder(organizationId: string | null, userId: string, orderId: string) {
     const order = await this.getOpenOrder(organizationId, orderId);
 
     const activeRounds = await this.prisma.orderRound.count({
@@ -431,10 +437,10 @@ export class PaymentsService {
   // Interno
   // --------------------------------------------------------------------------
 
-  private async getOpenOrder(organizationId: string, orderId: string) {
+  private async getOpenOrder(organizationId: string | null, orderId: string) {
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, organizationId },
-      select: { id: true, status: true, total: true },
+      select: { id: true, status: true, total: true, branchId: true },
     });
 
     if (!order) {

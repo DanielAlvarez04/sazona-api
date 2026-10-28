@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -23,17 +24,13 @@ export class ImportIngredientRowDto {
   name!: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(60)
-  sku?: string;
-
-  @IsOptional()
   @IsEnum(UnitCode)
   baseUnit?: UnitCode;
 
-  @IsOptional()
+  /** Obligatoria: el SKU se deriva del prefijo de la categoría. */
   @IsString()
-  categoryId?: string;
+  @IsNotEmpty()
+  categoryId!: string;
 
   @IsOptional()
   @IsString()
@@ -69,17 +66,13 @@ export class CreateIngredientDto {
   name!: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(60)
-  sku?: string;
-
-  @IsOptional()
   @IsEnum(UnitCode)
   baseUnit?: UnitCode;
 
-  @IsOptional()
+  /** Obligatoria: el SKU se deriva del prefijo de la categoría. */
   @IsString()
-  categoryId?: string;
+  @IsNotEmpty()
+  categoryId!: string;
 
   @IsOptional()
   @IsString()
@@ -124,16 +117,16 @@ export class UpdateIngredientDto {
   name?: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(60)
-  sku?: string;
-
-  @IsOptional()
   @IsEnum(UnitCode)
   baseUnit?: UnitCode;
 
+  /**
+   * Cambiar de categoría regenera el SKU con el prefijo de la nueva categoría.
+   * El SKU nunca se edita directamente.
+   */
   @IsOptional()
   @IsString()
+  @IsNotEmpty()
   categoryId?: string;
 
   @IsOptional()

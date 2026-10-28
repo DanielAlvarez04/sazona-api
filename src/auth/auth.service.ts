@@ -18,6 +18,7 @@ import { buildOrganizationSlug } from '../common/slug';
 import { isValidUsername, normalizeUsername } from '../common/usernames';
 import { MailService } from '../mail/mail.service';
 import type { GoogleProfile } from './google-oauth.service';
+import { InventoryService } from '../inventory/inventory.service';
 import {
   passwordChangedEmail,
   passwordResetEmail,
@@ -29,7 +30,7 @@ export interface JwtUser {
   sub: string;
   email: string | null;
   roles: Role[];
-  organizationId: string;
+  organizationId: string | null;
   sid: string;
 }
 
@@ -56,7 +57,7 @@ export type GoogleLoginResult =
         email: string | null;
         name: string | null;
         roles: Role[];
-        organizationId: string;
+        organizationId: string | null;
         organizationName: string;
       };
     }
@@ -142,7 +143,8 @@ export class AuthService {
     private prisma: PrismaService,
     private jwt: JwtService,
     private config: ConfigService,
-    private mail: MailService,
+    private readonly mail: MailService,
+    private readonly inventory?: InventoryService,
   ) {}
 
   // --------------------------------------------------------------------------
@@ -373,6 +375,7 @@ export class AuthService {
       });
 
       const session = await this.issueSessionForUser(created.id, meta);
+      if (this.inventory) await this.inventory.ensureCoreDefaults();
 
       return { kind: 'session', created: true, ...session };
     } catch (error) {
@@ -633,6 +636,8 @@ export class AuthService {
       roles: membership?.roles ?? [],
       organizationId: membership?.organizationId,
       organization: membership?.organization ?? null,
+      // Sucursal fija del miembro: si existe, no puede operar en el consolidado.
+      branchId: membership?.branchId ?? null,
     };
   }
 
@@ -741,7 +746,7 @@ export class AuthService {
 
       return created;
     });
-
+    if (this.inventory) await this.inventory.ensureCoreDefaults();
     await this.sendVerificationEmail(user.id, user.email);
 
     return this.issueSessionForUser(user.id, meta);
@@ -1067,7 +1072,7 @@ export class AuthService {
         name: user.name,
         roles: membership.roles,
         organizationId: membership.organizationId,
-        organizationName: membership.organization.name,
+        organizationName: membership.organization?.name ?? '',
       },
     };
   }
@@ -1076,7 +1081,7 @@ export class AuthService {
     userId: string,
     email: string | null,
     roles: Role[],
-    organizationId: string,
+    organizationId: string | null,
     meta: SessionMeta,
   ) {
     const sessionId = randomUUID();

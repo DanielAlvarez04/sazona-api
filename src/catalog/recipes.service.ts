@@ -4,7 +4,6 @@ import { IngredientQuantitiesService } from './ingredient-quantities.service';
 import { UpsertRecipeDto } from './dto/recipe.dto';
 
 const recipeInclude = {
-  variant: { select: { id: true, name: true } },
   ingredients: {
     orderBy: { ingredient: { name: 'asc' } },
     include: {
@@ -27,7 +26,7 @@ export class RecipesService {
     private readonly ingredientQuantities: IngredientQuantitiesService,
   ) {}
 
-  async list(organizationId: string, productId: string) {
+  async list(organizationId: string | null, productId: string) {
     await this.getProduct(organizationId, productId);
 
     const recipes = await this.prisma.recipe.findMany({
@@ -44,7 +43,7 @@ export class RecipesService {
   }
 
   async upsert(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     dto: UpsertRecipeDto,
   ) {
@@ -127,7 +126,7 @@ export class RecipesService {
   }
 
   async remove(
-    organizationId: string,
+    organizationId: string | null,
     productId: string,
     recipeId: string,
   ) {
@@ -146,7 +145,7 @@ export class RecipesService {
     return { ok: true };
   }
 
-  private async getProduct(organizationId: string, productId: string) {
+  private async getProduct(organizationId: string | null, productId: string) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, organizationId },
       select: { id: true, name: true },

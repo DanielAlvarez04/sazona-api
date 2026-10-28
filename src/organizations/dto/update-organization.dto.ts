@@ -1,4 +1,6 @@
 import {
+  IsArray,
+  IsBoolean,
   IsNumber,
   IsOptional,
   IsString,
@@ -26,4 +28,23 @@ export class UpdateOrganizationDto {
   @Min(0)
   @Max(1)
   taxRate?: number;
+
+  // Onboarding fields
+  @IsOptional()
+  @IsString()
+  businessType?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  serviceTypes?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  goals?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  hasBranches?: boolean;
 }

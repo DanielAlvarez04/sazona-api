@@ -11,6 +11,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CurrentBranch } from '../common/decorators/current-branch.decorator';
 import { JwtUser } from '../auth/auth.service';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -30,15 +31,23 @@ export class PaymentsController {
   @ApiOperation({ summary: 'Caja: listado de pagos con totales' })
   @RequirePermissions('reports:read')
   @Get('payments')
-  list(@CurrentUser() user: JwtUser, @Query() query: ListPaymentsQueryDto) {
-    return this.payments.list(user.organizationId, {
-      from: parseDate(query.from, 'desde'),
-      to: parseDate(query.to, 'hasta'),
-      method: query.method,
-      status: query.status,
-      limit: query.limit,
-      offset: query.offset,
-    });
+  list(
+    @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
+    @Query() query: ListPaymentsQueryDto,
+  ) {
+    return this.payments.list(
+      user.organizationId,
+      {
+        from: parseDate(query.from, 'desde'),
+        to: parseDate(query.to, 'hasta'),
+        method: query.method,
+        status: query.status,
+        limit: query.limit,
+        offset: query.offset,
+      },
+      branchId,
+    );
   }
 
   @ApiOperation({ summary: 'Registrar un pago (queda pendiente)' })

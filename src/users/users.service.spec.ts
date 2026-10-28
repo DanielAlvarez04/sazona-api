@@ -123,6 +123,7 @@ describe('UsersService', () => {
       data: {
         userId: 'user-2',
         organizationId: 'org-1',
+        branchId: null,
         roles: [Role.KITCHEN],
       },
     });

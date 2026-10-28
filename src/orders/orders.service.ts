@@ -94,6 +94,7 @@ const kitchenInclude: Prisma.OrderRoundInclude = {
       status: true,
       total: true,
       createdAt: true,
+      branch: { select: { id: true, name: true } },
     },
   },
 };
@@ -121,7 +122,12 @@ export class OrdersService {
   // Cuentas (pedidos)
   // --------------------------------------------------------------------------
 
-  async create(organizationId: string, userId: string, dto: CreateOrderDto) {
+  async create(
+    organizationId: string | null,
+    userId: string,
+    dto: CreateOrderDto,
+    branchId: string | null = null,
+  ) {
     const idempotencyKey = dto.idempotencyKey?.trim() || null;
 
     if (idempotencyKey) {
@@ -141,7 +147,8 @@ export class OrdersService {
 
     const created = await this.prisma.order.create({
       data: {
-        organizationId,
+        organizationId: organizationId ?? undefined,
+        branchId: branchId ?? undefined,
         userId,
         tableNumber: dto.tableNumber?.trim() || null,
         isTakeaway: dto.isTakeaway ?? false,
@@ -155,17 +162,23 @@ export class OrdersService {
     return created;
   }
 
-  list(organizationId: string, filters: OrderFilters = {}) {
+  list(
+    organizationId: string | null,
+    filters: OrderFilters = {},
+    branchId: string | null = null,
+  ) {
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
     const offset = Math.max(filters.offset ?? 0, 0);
 
     return this.prisma.order
       .findMany({
         where: {
-          organizationId,
+          organizationId: organizationId ?? undefined,
+          ...(branchId ? { branchId } : {}),
           ...(filters.status ? { status: filters.status } : {}),
         },
         include: {
+          branch: { select: { id: true, name: true } },
           user: { select: { id: true, name: true, username: true } },
           payments: {
             orderBy: { createdAt: 'asc' },
@@ -199,7 +212,7 @@ export class OrdersService {
       .then((orders) => orders.map((order) => this.withBalance(order)));
   }
 
-  async get(organizationId: string, orderId: string) {
+  async get(organizationId: string | null, orderId: string) {
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, organizationId },
       include: orderInclude,
@@ -217,7 +230,7 @@ export class OrdersService {
   // --------------------------------------------------------------------------
 
   async sendRound(
-    organizationId: string,
+    organizationId: string | null,
     userId: string,
     orderId: string,
     dto: SendRoundDto,
@@ -247,10 +260,10 @@ export class OrdersService {
 
     // La tasa del negocio es la que se aplica salvo que el producto tenga una
     // propia (importaciones antiguas). Se lee una vez por ronda.
-    const organization = await this.prisma.organization.findUniqueOrThrow({
+    const organization = organizationId ? await this.prisma.organization.findUniqueOrThrow({
       where: { id: organizationId },
       select: { taxRate: true },
-    });
+    }) : { taxRate: new Prisma.Decimal(0) };
 
     const items = await this.buildItems(
       organizationId,
@@ -303,7 +316,7 @@ export class OrdersService {
    *   automáticamente (`plan.md` §6.6): se corrige con un ajuste auditado.
    */
   async transitionRound(
-    organizationId: string,
+    organizationId: string | null,
     userId: string,
     orderId: string,
     roundId: string,
@@ -389,7 +402,7 @@ export class OrdersService {
   }
 
   async cancelOrder(
-    organizationId: string,
+    organizationId: string | null,
     userId: string,
     orderId: string,
     dto: CancelOrderDto = {},
@@ -452,10 +465,14 @@ export class OrdersService {
   // Cocina
   // --------------------------------------------------------------------------
 
-  kitchenRounds(organizationId: string) {
+  kitchenRounds(organizationId: string | null, branchId: string | null = null) {
     return this.prisma.orderRound.findMany({
       where: {
-        order: { organizationId, status: OrderStatus.OPEN },
+        order: {
+          organizationId: organizationId,
+          status: OrderStatus.OPEN,
+          ...(branchId ? { branchId } : {}),
+        },
         status: { in: OPEN_ROUND_STATUSES },
       },
       include: kitchenInclude,
@@ -493,7 +510,7 @@ export class OrdersService {
     };
   }
 
-  private async getOrderRow(organizationId: string, orderId: string) {
+  private async getOrderRow(organizationId: string | null, orderId: string) {
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, organizationId },
       select: {
@@ -501,6 +518,7 @@ export class OrdersService {
         status: true,
         tableNumber: true,
         isTakeaway: true,
+        branchId: true,
       },
     });
 
@@ -518,7 +536,7 @@ export class OrdersService {
    * línea es el bruto y el IVA se extrae de él.
    */
   private async buildItems(
-    organizationId: string,
+    organizationId: string | null,
     items: RoundItemDto[],
     defaultTaxRate: Prisma.Decimal,
   ) {
@@ -679,9 +697,13 @@ export class OrdersService {
    */
   private async consumeRound(
     tx: Prisma.TransactionClient,
-    organizationId: string,
+    organizationId: string | null,
     userId: string,
-    order: { tableNumber: string | null; isTakeaway: boolean },
+    order: {
+      tableNumber: string | null;
+      isTakeaway: boolean;
+      branchId: string | null;
+    },
     roundId: string,
   ): Promise<ConsumptionWarning[]> {
     const items = await tx.orderItem.findMany({
@@ -749,26 +771,78 @@ export class OrdersService {
         continue;
       }
 
-      const rows = await tx.$queryRaw<
-        Array<{ currentStock: Prisma.Decimal; name: string }>
-      >`
-        UPDATE "Ingredient"
-        SET "currentStock" = "currentStock" - CAST(${quantity.toString()} AS numeric),
-            "updatedAt" = NOW()
-        WHERE "id" = ${ingredientId}
-          AND "organizationId" = ${organizationId}
-        RETURNING "currentStock", "name"
-      `;
-
-      if (rows.length === 0) {
-        continue;
+      if (!organizationId) {
+        continue; // Skip if no organization (should not happen for orders)
       }
 
-      const stockAfter = new Prisma.Decimal(rows[0].currentStock);
+      let stockAfter: Prisma.Decimal;
+      let ingredientName: string;
+
+      if (order.branchId) {
+        const amount = quantity.toString();
+
+        await tx.$executeRaw`
+          INSERT INTO "BranchStock" ("id", "branchId", "ingredientId", "quantity", "createdAt", "updatedAt")
+          VALUES (gen_random_uuid()::text, ${order.branchId}, ${ingredientId}, 0, NOW(), NOW())
+          ON CONFLICT ("branchId", "ingredientId") DO NOTHING
+        `;
+
+        const branchRows = await tx.$queryRaw<
+          Array<{ quantity: Prisma.Decimal }>
+        >`
+          UPDATE "BranchStock"
+          SET "quantity" = "quantity" - CAST(${amount} AS numeric),
+              "updatedAt" = NOW()
+          WHERE "branchId" = ${order.branchId}
+            AND "ingredientId" = ${ingredientId}
+          RETURNING "quantity"
+        `;
+
+        if (branchRows.length === 0) {
+          continue;
+        }
+
+        const totals = await tx.$queryRaw<
+          Array<{ currentStock: Prisma.Decimal; name: string }>
+        >`
+          UPDATE "Ingredient"
+          SET "currentStock" = "currentStock" - CAST(${amount} AS numeric),
+              "updatedAt" = NOW()
+          WHERE "id" = ${ingredientId}
+            AND "organizationId" = ${organizationId}
+          RETURNING "currentStock", "name"
+        `;
+
+        if (totals.length === 0) {
+          continue;
+        }
+
+        stockAfter = new Prisma.Decimal(branchRows[0].quantity);
+        ingredientName = totals[0].name;
+      } else {
+        const rows = await tx.$queryRaw<
+          Array<{ currentStock: Prisma.Decimal; name: string }>
+        >`
+          UPDATE "Ingredient"
+          SET "currentStock" = "currentStock" - CAST(${quantity.toString()} AS numeric),
+              "updatedAt" = NOW()
+          WHERE "id" = ${ingredientId}
+            AND "organizationId" = ${organizationId}
+          RETURNING "currentStock", "name"
+        `;
+
+        if (rows.length === 0) {
+          continue;
+        }
+
+        stockAfter = new Prisma.Decimal(rows[0].currentStock);
+        ingredientName = rows[0].name;
+      }
 
       await tx.inventoryMovement.create({
         data: {
           organizationId,
+          branchId: order.branchId,
           ingredientId,
           userId,
           type: InventoryMovementType.CONSUMPTION,
@@ -784,7 +858,7 @@ export class OrdersService {
       if (stockAfter.lt(0)) {
         warnings.push({
           ingredientId,
-          name: rows[0].name,
+          name: ingredientName,
           stockAfter: stockAfter.toFixed(4),
         });
       }

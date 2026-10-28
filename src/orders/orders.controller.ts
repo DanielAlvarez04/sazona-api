@@ -13,6 +13,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { OrderStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CurrentBranch } from '../common/decorators/current-branch.decorator';
 import { JwtUser } from '../auth/auth.service';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -34,22 +35,31 @@ export class OrdersController {
   @Get()
   list(
     @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
     @Query('status') status?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    return this.orders.list(user.organizationId, {
-      status: parseStatus(status),
-      limit: parseInteger(limit, 50),
-      offset: parseInteger(offset, 0),
-    });
+    return this.orders.list(
+      user.organizationId,
+      {
+        status: parseStatus(status),
+        limit: parseInteger(limit, 50),
+        offset: parseInteger(offset, 0),
+      },
+      branchId,
+    );
   }
 
   @ApiOperation({ summary: 'Abrir una cuenta (borrador)' })
   @RequirePermissions('orders:draft')
   @Post()
-  create(@CurrentUser() user: JwtUser, @Body() dto: CreateOrderDto) {
-    return this.orders.create(user.organizationId, user.sub, dto);
+  create(
+    @CurrentUser() user: JwtUser,
+    @CurrentBranch() branchId: string | null,
+    @Body() dto: CreateOrderDto,
+  ) {
+    return this.orders.create(user.organizationId, user.sub, dto, branchId);
   }
 
   @ApiOperation({ summary: 'Detalle de una cuenta con rondas e historial' })

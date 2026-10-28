@@ -64,7 +64,7 @@ export class CatalogImportService {
   constructor(private readonly prisma: PrismaService) {}
 
   async importProducts(
-    organizationId: string,
+    organizationId: string | null,
     csv: string,
     dryRun = false,
   ): Promise<ImportResult> {
@@ -222,7 +222,7 @@ export class CatalogImportService {
   }
 
   private async resolveCategory(
-    organizationId: string,
+    organizationId: string | null,
     rawCategory: string,
     categoryByName: Map<string, { id: string; name: string }>,
     pendingCategories: Set<string>,
@@ -361,7 +361,7 @@ export class CatalogImportService {
   }
 
   private async findExisting(
-    organizationId: string,
+    organizationId: string | null,
     sku: string | null,
     name: string,
   ) {
