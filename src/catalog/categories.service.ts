@@ -1,4 +1,4 @@
-import {
+﻿import {
   ConflictException,
   Injectable,
   NotFoundException,
@@ -68,7 +68,7 @@ export class CategoriesService {
 
     if (activeProducts > 0) {
       throw new ConflictException(
-        `La categoría tiene ${activeProducts} producto(s) activo(s). Desactívalos o muévelos antes de desactivarla`,
+        `La categoría tiene ${activeProducts} artículo(s) activo(s). Desactívalos o muévelos antes de desactivarla`,
       );
     }
 
@@ -114,3 +114,4 @@ function normalizeOptional(value: string | undefined | null) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
 }
+

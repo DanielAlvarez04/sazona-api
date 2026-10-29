@@ -29,6 +29,12 @@ export class CreateVariantDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   priceAdjust?: number;
 
+  /** Multiplicador del consumo de la receta base (Regular = 1). */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @IsPositive()
+  recipeFactor?: number;
+
   @IsOptional()
   @IsInt()
   @Min(0)
@@ -49,6 +55,11 @@ export class UpdateVariantDto {
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   priceAdjust?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @IsPositive()
+  recipeFactor?: number;
 
   @IsOptional()
   @IsInt()
@@ -270,6 +281,14 @@ export class UpdateProductDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  /** Presentaciones a sincronizar (por nombre). Las faltantes se desactivan. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => CreateVariantDto)
+  variants?: CreateVariantDto[];
 }
 
 export class ReplaceExclusionsDto {

@@ -1,4 +1,4 @@
-import {
+﻿import {
   BadRequestException,
   ConflictException,
   Injectable,
@@ -33,6 +33,10 @@ const productListInclude = {
     },
   },
   _count: { select: { recipes: true } },
+  recipes: {
+    select: { id: true, name: true, variantId: true, isActive: true },
+    orderBy: { variantId: 'asc' },
+  },
 } satisfies Prisma.ProductInclude;
 
 const productDetailInclude = {
@@ -137,7 +141,7 @@ export class ProductsService {
     });
 
     if (!product) {
-      throw new NotFoundException('Producto no encontrado');
+      throw new NotFoundException('Artículo no encontrado');
     }
 
     return this.withDisplayUnits(product);
@@ -152,9 +156,9 @@ export class ProductsService {
   ) {
     return {
       ...product,
-      extras: product.extras.map((extra) => ({
+      extras: (product.extras ?? []).map((extra) => ({
         ...extra,
-        ingredients: extra.ingredients.map((item) => ({
+        ingredients: (extra.ingredients ?? []).map((item) => ({
           ...item,
           quantity: fromCanonicalQuantity(
             item.quantity,
@@ -169,9 +173,9 @@ export class ProductsService {
           },
         })),
       })),
-      recipes: product.recipes.map((recipe) => ({
+      recipes: (product.recipes ?? []).map((recipe) => ({
         ...recipe,
-        ingredients: recipe.ingredients.map((item) => ({
+        ingredients: (recipe.ingredients ?? []).map((item) => ({
           ...item,
           quantity: fromCanonicalQuantity(
             item.quantity,
@@ -205,7 +209,7 @@ export class ProductsService {
 
     if (!isCombo && comboComponents.length > 0) {
       throw new BadRequestException(
-        'Solo los productos marcados como combo pueden tener componentes',
+        'Solo los artículos marcados como combo pueden tener componentes',
       );
     }
 
@@ -248,6 +252,7 @@ export class ProductsService {
           create: (dto.variants ?? []).map((variant) => ({
             name: variant.name.trim(),
             priceAdjust: toMoney(variant.priceAdjust ?? 0),
+            recipeFactor: new Prisma.Decimal(variant.recipeFactor ?? 1),
             sortOrder: variant.sortOrder ?? 0,
             isActive: variant.isActive ?? true,
           })),
@@ -316,7 +321,7 @@ export class ProductsService {
 
       if (usedAsComponent > 0) {
         throw new ConflictException(
-          'El producto es componente de un combo activo. No puede convertirse en combo',
+          'El artículo es componente de un combo activo. No puede convertirse en combo',
         );
       }
     }
@@ -344,7 +349,71 @@ export class ProductsService {
       },
     });
 
+    if (dto.variants !== undefined) {
+      await this.syncVariants(product.id, dto.variants);
+    }
+
     return this.findOne(organizationId, product.id);
+  }
+
+  /**
+   * Sincroniza presentaciones por nombre: actualiza las existentes, crea las
+   * nuevas y desactiva las que ya no vienen (nunca las borra, para conservar
+   * pedidos históricos).
+   */
+  private async syncVariants(
+    productId: string,
+    variants: CreateVariantDto[],
+  ) {
+    const existing = await this.prisma.productVariant.findMany({
+      where: { productId },
+    });
+    const incoming = new Set(
+      variants.map((variant) => variant.name.trim().toLowerCase()),
+    );
+
+    for (const [index, variant] of variants.entries()) {
+      const name = variant.name.trim();
+      const match = existing.find(
+        (candidate) => candidate.name.trim().toLowerCase() === name.toLowerCase(),
+      );
+
+      if (match) {
+        await this.prisma.productVariant.update({
+          where: { id: match.id },
+          data: {
+            name,
+            priceAdjust: toMoney(variant.priceAdjust ?? 0),
+            recipeFactor: new Prisma.Decimal(variant.recipeFactor ?? 1),
+            sortOrder: variant.sortOrder ?? index,
+            isActive: variant.isActive ?? true,
+          },
+        });
+      } else {
+        await this.prisma.productVariant.create({
+          data: {
+            productId,
+            name,
+            priceAdjust: toMoney(variant.priceAdjust ?? 0),
+            recipeFactor: new Prisma.Decimal(variant.recipeFactor ?? 1),
+            sortOrder: variant.sortOrder ?? index,
+            isActive: variant.isActive ?? true,
+          },
+        });
+      }
+    }
+
+    for (const variant of existing) {
+      if (
+        variant.isActive &&
+        !incoming.has(variant.name.trim().toLowerCase())
+      ) {
+        await this.prisma.productVariant.update({
+          where: { id: variant.id },
+          data: { isActive: false },
+        });
+      }
+    }
   }
 
   async deactivate(organizationId: string | null, id: string) {
@@ -359,7 +428,7 @@ export class ProductsService {
 
     if (usedInCombos > 0) {
       throw new ConflictException(
-        'El producto es componente de un combo activo. Quítalo del combo antes de desactivarlo',
+        'El artículo es componente de un combo activo. Quítalo del combo antes de desactivarlo',
       );
     }
 
@@ -389,6 +458,7 @@ export class ProductsService {
         productId: product.id,
         name,
         priceAdjust: toMoney(dto.priceAdjust ?? 0),
+        recipeFactor: new Prisma.Decimal(dto.recipeFactor ?? 1),
         sortOrder: dto.sortOrder ?? 0,
         isActive: dto.isActive ?? true,
       },
@@ -424,6 +494,10 @@ export class ProductsService {
           dto.priceAdjust === undefined
             ? undefined
             : toMoney(dto.priceAdjust),
+        recipeFactor:
+          dto.recipeFactor === undefined
+            ? undefined
+            : new Prisma.Decimal(dto.recipeFactor),
         sortOrder: dto.sortOrder,
         isActive: dto.isActive,
       },
@@ -618,7 +692,7 @@ export class ProductsService {
 
     if (!product.isCombo) {
       throw new BadRequestException(
-        'Marca el producto como combo antes de configurar sus componentes',
+        'Marca el artículo como combo antes de configurar sus componentes',
       );
     }
 
@@ -659,7 +733,7 @@ export class ProductsService {
     });
 
     if (!product) {
-      throw new NotFoundException('Producto no encontrado');
+      throw new NotFoundException('Artículo no encontrado');
     }
 
     return product;
@@ -708,7 +782,7 @@ export class ProductsService {
     });
 
     if (existing) {
-      throw new ConflictException('Ya existe un producto con ese SKU');
+      throw new ConflictException('Ya existe un artículo con ese SKU');
     }
   }
 
@@ -728,7 +802,7 @@ export class ProductsService {
 
     if (existing) {
       throw new ConflictException(
-        'Ya existe una variante con ese nombre en el producto',
+        'Ya existe una variante con ese nombre en el artículo',
       );
     }
   }
@@ -805,7 +879,7 @@ export class ProductsService {
       });
 
       if (!component) {
-        throw new NotFoundException('Producto componente no encontrado');
+        throw new NotFoundException('Artículo componente no encontrado');
       }
 
       if (component.isCombo) {
@@ -816,7 +890,7 @@ export class ProductsService {
 
       if (!component.isActive) {
         throw new BadRequestException(
-          `El producto "${component.name}" está desactivado`,
+          `El artículo "${component.name}" está desactivado`,
         );
       }
 
@@ -827,7 +901,7 @@ export class ProductsService {
 
         if (!variant) {
           throw new NotFoundException(
-            'La variante no pertenece al producto componente',
+            'La variante no pertenece al artículo componente',
           );
         }
       }
@@ -852,3 +926,4 @@ function normalizeSku(value: string | undefined | null) {
   const trimmed = value?.trim().toUpperCase();
   return trimmed ? trimmed : null;
 }
+

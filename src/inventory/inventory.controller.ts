@@ -124,7 +124,7 @@ export class InventoryController {
     return this.inventory.updateIngredient(user.organizationId, id, dto);
   }
 
-  @ApiOperation({ summary: 'Sincronizar productos core con el inventario' })
+  @ApiOperation({ summary: 'Sincronizar insumos core con el inventario' })
   @RequirePermissions('inventory:manage')
   @HttpCode(HttpStatus.OK)
   @Post('ingredients/sync-core')

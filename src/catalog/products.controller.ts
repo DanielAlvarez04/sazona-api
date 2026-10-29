@@ -1,4 +1,4 @@
-import {
+﻿import {
   Body,
   Controller,
   Delete,
@@ -19,7 +19,6 @@ import { JwtUser } from '../auth/auth.service';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ProductsService } from './products.service';
-import { RecipesService } from './recipes.service';
 import { CatalogImportService } from './catalog-import.service';
 import {
   CreateExtraDto,
@@ -32,7 +31,6 @@ import {
   UpdateVariantDto,
 } from './dto/product.dto';
 import { ImportProductsDto } from './dto/import.dto';
-import { UpsertRecipeDto } from './dto/recipe.dto';
 
 @ApiTags('catalog')
 @Controller('catalog/products')
@@ -40,11 +38,10 @@ import { UpsertRecipeDto } from './dto/recipe.dto';
 export class ProductsController {
   constructor(
     private readonly products: ProductsService,
-    private readonly recipes: RecipesService,
     private readonly importer: CatalogImportService,
   ) {}
 
-  @ApiOperation({ summary: 'Listar productos del catálogo' })
+  @ApiOperation({ summary: 'Listar artículos del catálogo' })
   @Get()
   list(
     @CurrentUser() user: JwtUser,
@@ -61,20 +58,20 @@ export class ProductsController {
     });
   }
 
-  @ApiOperation({ summary: 'Detalle de un producto' })
+  @ApiOperation({ summary: 'Detalle de un artículo' })
   @Get(':id')
   findOne(@CurrentUser() user: JwtUser, @Param('id') id: string) {
     return this.products.findOne(user.organizationId, id);
   }
 
-  @ApiOperation({ summary: 'Crear producto con variantes, extras y combo' })
+  @ApiOperation({ summary: 'Crear artículo con variantes, extras y combo' })
   @RequirePermissions('catalog:manage')
   @Post()
   create(@CurrentUser() user: JwtUser, @Body() dto: CreateProductDto) {
     return this.products.create(user.organizationId, dto);
   }
 
-  @ApiOperation({ summary: 'Importar productos desde CSV' })
+  @ApiOperation({ summary: 'Importar artículos desde CSV' })
   @RequirePermissions('catalog:manage')
   @HttpCode(HttpStatus.OK)
   @Post('import')
@@ -89,7 +86,7 @@ export class ProductsController {
     );
   }
 
-  @ApiOperation({ summary: 'Editar datos generales del producto' })
+  @ApiOperation({ summary: 'Editar datos generales del artículo' })
   @RequirePermissions('catalog:manage')
   @Patch(':id')
   update(
@@ -100,7 +97,7 @@ export class ProductsController {
     return this.products.update(user.organizationId, id, dto);
   }
 
-  @ApiOperation({ summary: 'Desactivar producto' })
+  @ApiOperation({ summary: 'Desactivar artículo' })
   @RequirePermissions('catalog:manage')
   @HttpCode(HttpStatus.OK)
   @Delete(':id')
@@ -112,7 +109,7 @@ export class ProductsController {
   // Variantes
   // --------------------------------------------------------------------------
 
-  @ApiOperation({ summary: 'Añadir variante al producto' })
+  @ApiOperation({ summary: 'Añadir variante al artículo' })
   @RequirePermissions('catalog:manage')
   @Post(':id/variants')
   createVariant(
@@ -160,7 +157,7 @@ export class ProductsController {
   // Extras
   // --------------------------------------------------------------------------
 
-  @ApiOperation({ summary: 'Añadir extra al producto' })
+  @ApiOperation({ summary: 'Añadir extra al artículo' })
   @RequirePermissions('catalog:manage')
   @Post(':id/extras')
   createExtra(
@@ -228,37 +225,5 @@ export class ProductsController {
       dto.components,
     );
   }
-
-  // --------------------------------------------------------------------------
-  // Recetas
-  // --------------------------------------------------------------------------
-
-  @ApiOperation({ summary: 'Recetas del producto (base y por variante)' })
-  @Get(':id/recipes')
-  listRecipes(@CurrentUser() user: JwtUser, @Param('id') id: string) {
-    return this.recipes.list(user.organizationId, id);
-  }
-
-  @ApiOperation({ summary: 'Crear o reemplazar una receta' })
-  @RequirePermissions('catalog:manage')
-  @Put(':id/recipes')
-  upsertRecipe(
-    @CurrentUser() user: JwtUser,
-    @Param('id') id: string,
-    @Body() dto: UpsertRecipeDto,
-  ) {
-    return this.recipes.upsert(user.organizationId, id, dto);
-  }
-
-  @ApiOperation({ summary: 'Eliminar una receta' })
-  @RequirePermissions('catalog:manage')
-  @HttpCode(HttpStatus.OK)
-  @Delete(':id/recipes/:recipeId')
-  removeRecipe(
-    @CurrentUser() user: JwtUser,
-    @Param('id') id: string,
-    @Param('recipeId') recipeId: string,
-  ) {
-    return this.recipes.remove(user.organizationId, id, recipeId);
-  }
 }
+

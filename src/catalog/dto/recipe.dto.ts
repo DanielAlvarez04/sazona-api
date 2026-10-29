@@ -5,17 +5,22 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsInt,
   IsNumber,
   IsOptional,
   IsPositive,
   IsString,
+  Matches,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
 import { UnitCode } from '@prisma/client';
 
-export class RecipeIngredientInputDto {
+/** Alternativa de un ingrediente (ej. leche deslactosada, de coco). */
+export class RecipeIngredientOptionInputDto {
   @IsString()
   @MinLength(1)
   ingredientId!: string;
@@ -30,6 +35,204 @@ export class RecipeIngredientInputDto {
   unit?: UnitCode;
 }
 
+export class RecipeIngredientInputDto {
+  /** Insumo default del slot. */
+  @IsString()
+  @MinLength(1)
+  ingredientId!: string;
+
+  @IsNumber({ maxDecimalPlaces: 6 })
+  @IsPositive()
+  quantity!: number;
+
+  @IsOptional()
+  @IsEnum(UnitCode)
+  unit?: UnitCode;
+
+  /** Nombre del slot ("Leche"); si falta se usa el del insumo default. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  label?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isOptional?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => RecipeIngredientOptionInputDto)
+  alternatives?: RecipeIngredientOptionInputDto[];
+}
+
+export class RecipeVariantInputDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  name!: string;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  priceAdjust?: number;
+
+  /** Multiplicador de consumo; Regular = 1. */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @IsPositive()
+  recipeFactor?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+/** Publicar la receta como artículo vendible. */
+export class PublishRecipeDto {
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  price!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  @Matches(/^[A-Za-z0-9._-]+$/, {
+    message: 'El SKU solo admite letras, números, punto, guion y guion bajo',
+  })
+  sku?: string;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string | null;
+
+  /** Tasa de IVA como fracción (0.16 = 16 %). */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  @Max(1)
+  taxRate?: number | null;
+
+  /** Presentaciones; si se omite se crean Chico, Regular y Grande. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => RecipeVariantInputDto)
+  variants?: RecipeVariantInputDto[];
+}
+
+/** Convertir la receta en un insumo del inventario. */
+export class RecipeProductionInputDto {
+  /** Unidad visible con la que se produce el insumo. */
+  @IsEnum(UnitCode)
+  displayUnit!: UnitCode;
+
+  /** Rendimiento del lote en `displayUnit`. */
+  @IsNumber({ maxDecimalPlaces: 6 })
+  @IsPositive()
+  yieldQuantity!: number;
+}
+
+export class CreateRecipeDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => RecipeIngredientInputDto)
+  ingredients?: RecipeIngredientInputDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PublishRecipeDto)
+  publish?: PublishRecipeDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => RecipeProductionInputDto)
+  produce?: RecipeProductionInputDto;
+}
+
+export class UpdateRecipeDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string | null;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => RecipeIngredientInputDto)
+  ingredients?: RecipeIngredientInputDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PublishRecipeDto)
+  publish?: PublishRecipeDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => RecipeProductionInputDto)
+  produce?: RecipeProductionInputDto;
+}
+
+export class ProduceRecipeDto {
+  /** Cantidad producida; si se omite se usa el rendimiento de la receta. */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 6 })
+  @IsPositive()
+  quantity?: number;
+
+  @IsOptional()
+  @IsEnum(UnitCode)
+  unit?: UnitCode;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  reason?: string;
+}
+
+// Compatibilidad con el editor anterior por producto/variante.
 export class UpsertRecipeDto {
   @IsOptional()
   @IsString()
@@ -37,10 +240,8 @@ export class UpsertRecipeDto {
   @MaxLength(120)
   name?: string;
 
-  /** `null` o ausente = receta base del producto. */
   @IsOptional()
   @IsString()
-  @MinLength(1)
   variantId?: string | null;
 
   @IsOptional()

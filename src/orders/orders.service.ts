@@ -1,4 +1,4 @@
-import {
+﻿import {
   BadRequestException,
   ConflictException,
   Injectable,
@@ -266,7 +266,7 @@ export class OrdersService {
       }
     }
 
-    // La tasa del negocio es la que se aplica salvo que el producto tenga una
+    // La tasa del negocio es la que se aplica salvo que el artículo tenga una
     // propia (importaciones antiguas). Se lee una vez por ronda.
     const organization = organizationId ? await this.prisma.organization.findUniqueOrThrow({
       where: { id: organizationId },
@@ -566,7 +566,7 @@ export class OrdersService {
 
       if (!product) {
         throw new BadRequestException(
-          'Uno de los productos del pedido no existe en el catálogo',
+          'Uno de los artículos del pedido no existe en el catálogo',
         );
       }
 
@@ -719,20 +719,23 @@ export class OrdersService {
       include: {
         extras: true,
         exclusions: true,
+        ingredientChoices: true,
         product: {
           include: {
+            variants: { select: { id: true, recipeFactor: true } },
             recipes: {
               where: { isActive: true },
-              include: { ingredients: true },
+              include: { ingredients: { include: { options: true } } },
             },
             extras: { include: { ingredients: true } },
             comboComponents: {
               include: {
+                variant: { select: { id: true, recipeFactor: true } },
                 component: {
                   include: {
                     recipes: {
                       where: { isActive: true },
-                      include: { ingredients: true },
+                      include: { ingredients: { include: { options: true } } },
                     },
                   },
                 },
@@ -894,11 +897,30 @@ interface ConsumptionLine {
   quantity: Prisma.Decimal;
 }
 
+interface RecipeLineLike {
+  id: string;
+  ingredientId: string;
+  quantity: Prisma.Decimal;
+  options: Array<{ ingredientId: string; quantity: Prisma.Decimal }>;
+}
+
+interface RecipeLike {
+  variantId: string | null;
+  ingredients: RecipeLineLike[];
+}
+
+interface VariantLike {
+  id: string;
+  recipeFactor: Prisma.Decimal;
+}
+
 /**
  * Consumo de inventario de una línea (por unidad pedida).
  *
- * - Producto normal: receta de la variante o, si no existe, la base.
+ * - Artículo normal: receta de la variante o, si no existe, la base escalada
+ *   por `recipeFactor` de la presentación (Regular = 1).
  * - Combo: recetas de sus componentes (no hay combos anidados).
+ * - Alternativas: se usa la opción elegida en el pedido o el insumo default.
  * - Extras: consumo declarado en el catálogo del extra.
  * - Exclusiones: el ingrediente que el cliente quitó no se descuenta.
  */
@@ -906,12 +928,14 @@ function consumptionForItem(item: {
   productVariantId: string | null;
   extras: Array<{ productExtraId: string | null }>;
   exclusions: Array<{ ingredientId: string }>;
+  ingredientChoices: Array<{
+    recipeIngredientId: string;
+    ingredientId: string;
+  }>;
   product: {
     isCombo: boolean;
-    recipes: Array<{
-      variantId: string | null;
-      ingredients: Array<{ ingredientId: string; quantity: Prisma.Decimal }>;
-    }>;
+    variants: VariantLike[];
+    recipes: RecipeLike[];
     extras: Array<{
       id: string;
       ingredients: Array<{
@@ -922,14 +946,9 @@ function consumptionForItem(item: {
     comboComponents: Array<{
       componentVariantId: string | null;
       quantity: number;
+      variant: VariantLike | null;
       component: {
-        recipes: Array<{
-          variantId: string | null;
-          ingredients: Array<{
-            ingredientId: string;
-            quantity: Prisma.Decimal;
-          }>;
-        }>;
+        recipes: RecipeLike[];
       };
     }>;
   };
@@ -937,32 +956,55 @@ function consumptionForItem(item: {
   const excluded = new Set(
     item.exclusions.map((exclusion) => exclusion.ingredientId),
   );
+  const choices = new Map(
+    item.ingredientChoices.map((choice) => [
+      choice.recipeIngredientId,
+      choice.ingredientId,
+    ]),
+  );
   const lines: ConsumptionLine[] = [];
 
   const pushRecipe = (
-    recipes: Array<{
-      variantId: string | null;
-      ingredients: Array<{ ingredientId: string; quantity: Prisma.Decimal }>;
-    }>,
+    recipes: RecipeLike[],
     variantId: string | null,
     multiplier: Prisma.Decimal,
+    variants: VariantLike[],
   ) => {
+    const variantRecipe = recipes.find(
+      (candidate) => candidate.variantId === variantId,
+    );
     const recipe =
-      recipes.find((candidate) => candidate.variantId === variantId) ??
-      recipes.find((candidate) => candidate.variantId === null);
+      variantRecipe ?? recipes.find((candidate) => candidate.variantId === null);
 
     if (!recipe) {
       return;
     }
 
+    // La receta propia de la presentación ya tiene sus cantidades; la receta
+    // base se escala con el factor de la presentación (Regular = 1).
+    const factor = variantRecipe
+      ? new Prisma.Decimal(1)
+      : (variants.find((variant) => variant.id === variantId)?.recipeFactor ??
+        new Prisma.Decimal(1));
+    const totalMultiplier = multiplier.times(factor);
+
     for (const line of recipe.ingredients) {
-      if (excluded.has(line.ingredientId)) {
+      const chosenIngredientId = choices.get(line.id);
+      const option = chosenIngredientId
+        ? line.options.find(
+            (candidate) => candidate.ingredientId === chosenIngredientId,
+          )
+        : undefined;
+      const ingredientId = option?.ingredientId ?? line.ingredientId;
+      const quantity = option?.quantity ?? line.quantity;
+
+      if (excluded.has(ingredientId)) {
         continue;
       }
 
       lines.push({
-        ingredientId: line.ingredientId,
-        quantity: line.quantity.times(multiplier),
+        ingredientId,
+        quantity: quantity.times(totalMultiplier),
       });
     }
   };
@@ -973,10 +1015,16 @@ function consumptionForItem(item: {
         component.component.recipes,
         component.componentVariantId,
         new Prisma.Decimal(component.quantity),
+        component.variant ? [component.variant] : [],
       );
     }
   } else {
-    pushRecipe(item.product.recipes, item.productVariantId, new Prisma.Decimal(1));
+    pushRecipe(
+      item.product.recipes,
+      item.productVariantId,
+      new Prisma.Decimal(1),
+      item.product.variants,
+    );
   }
 
   for (const extra of item.extras) {
@@ -998,3 +1046,4 @@ function consumptionForItem(item: {
 
   return lines;
 }
+

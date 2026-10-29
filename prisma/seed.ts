@@ -143,6 +143,7 @@ async function main() {
       frias: await ensureCategory(prisma, org.id, 'Bebidas frías', 2),
       panaderia: await ensureCategory(prisma, org.id, 'Panadería', 3),
       combos: await ensureCategory(prisma, org.id, 'Combos', 4),
+      salsas: await ensureCategory(prisma, org.id, 'Salsas y complementos', 5),
     };
 
     const ingredients = {
@@ -245,6 +246,56 @@ async function main() {
         locationId: ingredientLocationMap['Almacén seco'],
         unitCost: '850',
         maxStock: '5',
+      }),
+      lecheCoco: await ensureIngredient(prisma, org.id, {
+        name: 'Leche de coco',
+        baseUnit: UnitCode.L,
+        currentStock: '6',
+        minStock: '1',
+        categoryId: ingredientCategoryMap['Lácteos y refrigerados'],
+        locationId: ingredientLocationMap['Refrigerador'],
+        unitCost: '48',
+        maxStock: '12',
+      }),
+      jitomate: await ensureIngredient(prisma, org.id, {
+        name: 'Jitomate',
+        baseUnit: UnitCode.KG,
+        currentStock: '8',
+        minStock: '2',
+        categoryId: ingredientCategoryMap['Frutas y verduras'],
+        locationId: ingredientLocationMap['Refrigerador'],
+        unitCost: '28',
+        maxStock: '15',
+      }),
+      cebolla: await ensureIngredient(prisma, org.id, {
+        name: 'Cebolla',
+        baseUnit: UnitCode.KG,
+        currentStock: '6',
+        minStock: '1.5',
+        categoryId: ingredientCategoryMap['Frutas y verduras'],
+        locationId: ingredientLocationMap['Almacén seco'],
+        unitCost: '22',
+        maxStock: '12',
+      }),
+      chileSerrano: await ensureIngredient(prisma, org.id, {
+        name: 'Chile serrano',
+        baseUnit: UnitCode.KG,
+        currentStock: '2',
+        minStock: '0.5',
+        categoryId: ingredientCategoryMap['Frutas y verduras'],
+        locationId: ingredientLocationMap['Refrigerador'],
+        unitCost: '45',
+        maxStock: '5',
+      }),
+      salsaVerde: await ensureIngredient(prisma, org.id, {
+        name: 'Salsa verde',
+        baseUnit: UnitCode.L,
+        currentStock: '0',
+        minStock: '0.5',
+        categoryId: ingredientCategoryMap['Aceites, salsas y condimentos'],
+        locationId: ingredientLocationMap['Refrigerador'],
+        unitCost: '35',
+        maxStock: '4',
       }),
     };
 
@@ -418,6 +469,70 @@ async function main() {
         { ingredientId: ingredients.vaso.id, quantity: '1' },
       ],
     );
+
+    // Alternativa del ingrediente "leche": leche entera (default) o de coco.
+    const chocolateRecipe = await prisma.recipe.findFirst({
+      where: { organizationId: org.id, productId: chocolateCaliente.id },
+      include: { ingredients: true },
+    });
+    const milkLine = chocolateRecipe?.ingredients.find(
+      (line) => line.ingredientId === ingredients.leche.id,
+    );
+
+    if (milkLine) {
+      await prisma.recipeIngredientOption.upsert({
+        where: {
+          recipeIngredientId_ingredientId: {
+            recipeIngredientId: milkLine.id,
+            ingredientId: ingredients.lecheCoco.id,
+          },
+        },
+        update: { quantity: toCanonicalQuantity('0.2', UnitCode.L) },
+        create: {
+          recipeIngredientId: milkLine.id,
+          ingredientId: ingredients.lecheCoco.id,
+          quantity: toCanonicalQuantity('0.2', UnitCode.L),
+        },
+      });
+    }
+
+    // Receta independiente que también es insumo: salsa verde por lote.
+    const salsaRecipe = await prisma.recipe.findFirst({
+      where: { organizationId: org.id, productId: null, name: 'Salsa verde' },
+    });
+
+    if (!salsaRecipe) {
+      await prisma.recipe.create({
+        data: {
+          organizationId: org.id,
+          name: 'Salsa verde',
+          description: 'Receta base que se produce como insumo para otros platillos',
+          categoryId: categories.salsas.id,
+          producesIngredientId: ingredients.salsaVerde.id,
+          yieldQuantity: toCanonicalQuantity('2', UnitCode.L),
+          yieldUnit: UnitCode.ML,
+          ingredients: {
+            create: [
+              {
+                ingredientId: ingredients.jitomate.id,
+                quantity: toCanonicalQuantity('0.5', UnitCode.KG),
+                sortOrder: 0,
+              },
+              {
+                ingredientId: ingredients.cebolla.id,
+                quantity: toCanonicalQuantity('0.2', UnitCode.KG),
+                sortOrder: 1,
+              },
+              {
+                ingredientId: ingredients.chileSerrano.id,
+                quantity: toCanonicalQuantity('0.1', UnitCode.KG),
+                sortOrder: 2,
+              },
+            ],
+          },
+        },
+      });
+    }
 
     // El combo no tiene receta propia: su consumo sale de sus componentes.
 
@@ -606,6 +721,24 @@ async function ensureRecipe(
     return existing;
   }
 
+  // Las cantidades de la semilla se escriben en la unidad visible del insumo.
+  const resolved: Array<{
+    ingredientId: string;
+    quantity: Prisma.Decimal;
+  }> = [];
+
+  for (const item of ingredients) {
+    const ingredient = await prisma.ingredient.findUniqueOrThrow({
+      where: { id: item.ingredientId },
+      select: { displayUnit: true },
+    });
+
+    resolved.push({
+      ingredientId: item.ingredientId,
+      quantity: toCanonicalQuantity(item.quantity, ingredient.displayUnit),
+    });
+  }
+
   return prisma.recipe.create({
     data: {
       organizationId,
@@ -613,10 +746,7 @@ async function ensureRecipe(
       variantId,
       name,
       ingredients: {
-        create: ingredients.map((ingredient) => ({
-          ingredientId: ingredient.ingredientId,
-          quantity: ingredient.quantity,
-        })),
+        create: resolved,
       },
     },
   });
