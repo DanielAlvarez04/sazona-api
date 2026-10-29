@@ -53,12 +53,70 @@ export const UNITS: readonly UnitDefinition[] = [
 
 export const UNIT_CODES = UNITS.map((unit) => unit.code);
 
+/** Unidad canónica de almacenamiento por dimensión. */
+export const CANONICAL_UNIT_BY_DIMENSION: Record<UnitDimension, UnitCode> = {
+  MASS: UnitCode.G,
+  VOLUME: UnitCode.ML,
+  COUNT: UnitCode.UNIT,
+};
+
 const UNIT_MAP = new Map<UnitCode, UnitDefinition>(
   UNITS.map((unit) => [unit.code, unit]),
 );
 
 export function isUnitCode(value: unknown): value is UnitCode {
   return typeof value === 'string' && UNIT_MAP.has(value as UnitCode);
+}
+
+/** Unidad canónica (G, ML o UNIT) a la que pertenece `unit`. */
+export function canonicalUnit(unit: UnitCode): UnitCode {
+  return CANONICAL_UNIT_BY_DIMENSION[unitDefinition(unit).dimension];
+}
+
+/** `true` si ambas unidades miden lo mismo (masa, volumen o conteo). */
+export function sameDimension(a: UnitCode, b: UnitCode): boolean {
+  return unitDefinition(a).dimension === unitDefinition(b).dimension;
+}
+
+/** Cuántas unidades canónicas representa 1 `unit`. */
+export function canonicalFactor(unit: UnitCode): Prisma.Decimal {
+  return new Prisma.Decimal(unitDefinition(unit).factor);
+}
+
+/** Convierte una cantidad expresada en `unit` a la unidad canónica. */
+export function toCanonicalQuantity(
+  value: Prisma.Decimal.Value,
+  unit: UnitCode,
+): Prisma.Decimal {
+  return convertQuantity(value, unit, canonicalUnit(unit));
+}
+
+/** Convierte una cantidad canónica a la unidad visible `unit`. */
+export function fromCanonicalQuantity(
+  value: Prisma.Decimal.Value,
+  unit: UnitCode,
+): Prisma.Decimal {
+  return convertQuantity(value, canonicalUnit(unit), unit);
+}
+
+/** Costo por unidad visible a partir del costo por unidad canónica. */
+export function toDisplayCost(
+  value: Prisma.Decimal.Value,
+  unit: UnitCode,
+): Prisma.Decimal {
+  return new Prisma.Decimal(value)
+    .times(canonicalFactor(unit))
+    .toDecimalPlaces(QUANTITY_SCALE, Prisma.Decimal.ROUND_HALF_UP);
+}
+
+/** Costo por unidad canónica a partir del costo por unidad visible. */
+export function toCanonicalCost(
+  value: Prisma.Decimal.Value,
+  unit: UnitCode,
+): Prisma.Decimal {
+  return new Prisma.Decimal(value)
+    .dividedBy(canonicalFactor(unit))
+    .toDecimalPlaces(6, Prisma.Decimal.ROUND_HALF_UP);
 }
 
 export function unitDefinition(unit: UnitCode): UnitDefinition {

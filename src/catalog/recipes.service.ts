@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { fromCanonicalQuantity } from '../common/units';
 import { IngredientQuantitiesService } from './ingredient-quantities.service';
 import { UpsertRecipeDto } from './dto/recipe.dto';
 
@@ -12,6 +14,7 @@ const recipeInclude = {
           id: true,
           name: true,
           baseUnit: true,
+          displayUnit: true,
           currentStock: true,
         },
       },
@@ -36,7 +39,7 @@ export class RecipesService {
     });
 
     return recipes.map((recipe) => ({
-      ...recipe,
+      ...this.withDisplayUnits(recipe),
       // Sin ingredientes no se puede calcular el consumo (`plan.md` §6.3).
       canComputeConsumption: recipe.ingredients.length > 0,
     }));
@@ -122,7 +125,7 @@ export class RecipesService {
     return this.prisma.recipe.findUniqueOrThrow({
       where: { id: recipeId },
       include: recipeInclude,
-    });
+    }).then((recipe) => this.withDisplayUnits(recipe));
   }
 
   async remove(
@@ -143,6 +146,29 @@ export class RecipesService {
     await this.prisma.recipe.delete({ where: { id: recipe.id } });
 
     return { ok: true };
+  }
+
+  /** Expresa las cantidades de la receta en la unidad visible del ingrediente. */
+  private withDisplayUnits(
+    recipe: Prisma.RecipeGetPayload<{ include: typeof recipeInclude }>,
+  ) {
+    return {
+      ...recipe,
+      ingredients: recipe.ingredients.map((item) => ({
+        ...item,
+        quantity: fromCanonicalQuantity(
+          item.quantity,
+          item.ingredient.displayUnit,
+        ),
+        ingredient: {
+          ...item.ingredient,
+          currentStock: fromCanonicalQuantity(
+            item.ingredient.currentStock,
+            item.ingredient.displayUnit,
+          ),
+        },
+      })),
+    };
   }
 
   private async getProduct(organizationId: string | null, productId: string) {

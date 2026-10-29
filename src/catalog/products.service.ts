@@ -7,7 +7,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { IngredientQuantitiesService } from './ingredient-quantities.service';
-import { toMoney } from '../common/units';
+import { fromCanonicalQuantity, toMoney } from '../common/units';
 import {
   ComboComponentInputDto,
   CreateExtraDto,
@@ -27,7 +27,9 @@ const productListInclude = {
   // El POS necesita saber qué ingredientes se pueden quitar al tomar la comanda.
   ingredientExclusions: {
     include: {
-      ingredient: { select: { id: true, name: true, baseUnit: true } },
+      ingredient: {
+        select: { id: true, name: true, baseUnit: true, displayUnit: true },
+      },
     },
   },
   _count: { select: { recipes: true } },
@@ -45,7 +47,13 @@ const productDetailInclude = {
       ingredients: {
         include: {
           ingredient: {
-            select: { id: true, name: true, baseUnit: true, currentStock: true },
+            select: {
+              id: true,
+              name: true,
+              baseUnit: true,
+              displayUnit: true,
+              currentStock: true,
+            },
           },
         },
       },
@@ -53,7 +61,9 @@ const productDetailInclude = {
   },
   ingredientExclusions: {
     include: {
-      ingredient: { select: { id: true, name: true, baseUnit: true } },
+      ingredient: {
+        select: { id: true, name: true, baseUnit: true, displayUnit: true },
+      },
     },
   },
   comboComponents: {
@@ -70,7 +80,9 @@ const productDetailInclude = {
       variant: { select: { id: true, name: true } },
       ingredients: {
         include: {
-          ingredient: { select: { id: true, name: true, baseUnit: true } },
+          ingredient: {
+            select: { id: true, name: true, baseUnit: true, displayUnit: true },
+          },
         },
       },
     },
@@ -128,7 +140,46 @@ export class ProductsService {
       throw new NotFoundException('Producto no encontrado');
     }
 
-    return product;
+    return this.withDisplayUnits(product);
+  }
+
+  /**
+   * Las cantidades de recetas y extras se guardan en la unidad canónica del
+   * ingrediente; la UI las recibe en su unidad visible.
+   */
+  private withDisplayUnits(
+    product: Prisma.ProductGetPayload<{ include: typeof productDetailInclude }>,
+  ) {
+    return {
+      ...product,
+      extras: product.extras.map((extra) => ({
+        ...extra,
+        ingredients: extra.ingredients.map((item) => ({
+          ...item,
+          quantity: fromCanonicalQuantity(
+            item.quantity,
+            item.ingredient.displayUnit,
+          ),
+          ingredient: {
+            ...item.ingredient,
+            currentStock: fromCanonicalQuantity(
+              item.ingredient.currentStock,
+              item.ingredient.displayUnit,
+            ),
+          },
+        })),
+      })),
+      recipes: product.recipes.map((recipe) => ({
+        ...recipe,
+        ingredients: recipe.ingredients.map((item) => ({
+          ...item,
+          quantity: fromCanonicalQuantity(
+            item.quantity,
+            item.ingredient.displayUnit,
+          ),
+        })),
+      })),
+    };
   }
 
   async create(organizationId: string | null, dto: CreateProductDto) {

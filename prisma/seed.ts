@@ -5,6 +5,11 @@ import { config } from 'dotenv';
 import { hash } from 'argon2';
 import { PrismaClient, Prisma, UnitCode } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
+import {
+  canonicalUnit,
+  toCanonicalCost,
+  toCanonicalQuantity,
+} from '../src/common/units';
 
 config();
 
@@ -16,17 +21,19 @@ const ORG_SLUG = 'naranja-pimienta';
 // Categorías core del sistema (isCore = true, no editables por el usuario)
 const CORE_INGREDIENT_CATEGORIES = [
   { name: 'Frutas y verduras', description: 'Productos frescos de origen vegetal', sortOrder: 1 },
-  { name: 'Abarrotes y secos', description: 'Alimentos no perecederos, granos, harinas, conservas', sortOrder: 2 },
-  { name: 'Lácteos y huevo', description: 'Leche, quesos, yogures, huevos y derivados', sortOrder: 3 },
-  { name: 'Carnes y proteínas', description: 'Carnes rojas, aves, pescados, mariscos, legumbres', sortOrder: 4 },
-  { name: 'Café, té y chocolate', description: 'Café en grano/molido, tés, cacao, chocolate', sortOrder: 5 },
-  { name: 'Bebidas e ingredientes para bebidas', description: 'Jugos, refrescos, alcoholes, syrups, bases', sortOrder: 6 },
-  { name: 'Aceites, salsas y condimentos', description: 'Aceites, vinagres, salsas, especias, adobos', sortOrder: 7 },
-  { name: 'Panadería y tortillas', description: 'Pan, tortillas, masas, productos de panadería', sortOrder: 8 },
-  { name: 'Desechables y empaques', description: 'Vasos, cubiertos, servilletas, bolsas, film', sortOrder: 9 },
-  { name: 'Limpieza e higiene', description: 'Detergentes, desinfectantes, jabones, papel', sortOrder: 10 },
-  { name: 'Material de cocina', description: 'Utensilios, ollas, sartenes, cuchillos, equipos', sortOrder: 11 },
-  { name: 'Otros insumos', description: 'Todo lo que no encaje en las categorías anteriores', sortOrder: 12 },
+  { name: 'Carnes, aves y pescados', description: 'Carnes rojas, aves, pescados y mariscos', sortOrder: 2 },
+  { name: 'Lácteos y refrigerados', description: 'Leche, quesos, yogures, huevos y productos refrigerados', sortOrder: 3 },
+  { name: 'Congelados', description: 'Productos congelados listos para usar', sortOrder: 4 },
+  { name: 'Abarrotes y productos secos', description: 'Alimentos no perecederos, granos y harinas', sortOrder: 5 },
+  { name: 'Aceites, salsas y condimentos', description: 'Aceites, vinagres, salsas, especias y adobos', sortOrder: 6 },
+  { name: 'Panadería y tortillería', description: 'Pan, tortillas, masas y productos de panadería', sortOrder: 7 },
+  { name: 'Café, té y bebidas', description: 'Café, té, cacao, jugos, refrescos y bases para bebidas', sortOrder: 8 },
+  { name: 'Enlatados, conservas y encurtidos', description: 'Latas, conservas y encurtidos', sortOrder: 9 },
+  { name: 'Repostería y decoración', description: 'Insumos de repostería, coberturas y decoración', sortOrder: 10 },
+  { name: 'Desechables y empaques', description: 'Vasos, cubiertos, servilletas, bolsas y film', sortOrder: 11 },
+  { name: 'Limpieza e higiene', description: 'Detergentes, desinfectantes, jabones y papel', sortOrder: 12 },
+  { name: 'Artículos de operación', description: 'Utensilios, equipo menor y artículos de operación', sortOrder: 13 },
+  { name: 'Bebidas alcohólicas y coctelería', description: 'Licores, cervezas, vinos y mezcladores', sortOrder: 14 },
 ];
 
 // Ubicaciones core del sistema (isCore = true, no editables por el usuario)
@@ -144,7 +151,7 @@ async function main() {
         baseUnit: UnitCode.KG,
         currentStock: '12',
         minStock: '2',
-        categoryId: ingredientCategoryMap['Café, té y chocolate'],
+        categoryId: ingredientCategoryMap['Café, té y bebidas'],
         locationId: ingredientLocationMap['Almacén seco'],
         unitCost: '120',
         maxStock: '50',
@@ -154,7 +161,7 @@ async function main() {
         baseUnit: UnitCode.L,
         currentStock: '24',
         minStock: '5',
-        categoryId: ingredientCategoryMap['Lácteos y huevo'],
+        categoryId: ingredientCategoryMap['Lácteos y refrigerados'],
         locationId: ingredientLocationMap['Refrigerador'],
         unitCost: '25',
         maxStock: '50',
@@ -164,7 +171,7 @@ async function main() {
         baseUnit: UnitCode.L,
         currentStock: '100',
         minStock: '10',
-        categoryId: ingredientCategoryMap['Bebidas e ingredientes para bebidas'],
+        categoryId: ingredientCategoryMap['Café, té y bebidas'],
         locationId: ingredientLocationMap['Almacén seco'],
         unitCost: '5',
         maxStock: '200',
@@ -174,7 +181,7 @@ async function main() {
         baseUnit: UnitCode.KG,
         currentStock: '25',
         minStock: '5',
-        categoryId: ingredientCategoryMap['Abarrotes y secos'],
+        categoryId: ingredientCategoryMap['Abarrotes y productos secos'],
         locationId: ingredientLocationMap['Almacén seco'],
         unitCost: '18',
         maxStock: '50',
@@ -184,7 +191,7 @@ async function main() {
         baseUnit: UnitCode.KG,
         currentStock: '15',
         minStock: '3',
-        categoryId: ingredientCategoryMap['Abarrotes y secos'],
+        categoryId: ingredientCategoryMap['Abarrotes y productos secos'],
         locationId: ingredientLocationMap['Almacén seco'],
         unitCost: '22',
         maxStock: '30',
@@ -194,7 +201,7 @@ async function main() {
         baseUnit: UnitCode.KG,
         currentStock: '8',
         minStock: '2',
-        categoryId: ingredientCategoryMap['Lácteos y huevo'],
+        categoryId: ingredientCategoryMap['Lácteos y refrigerados'],
         locationId: ingredientLocationMap['Refrigerador'],
         unitCost: '85',
         maxStock: '20',
@@ -204,7 +211,7 @@ async function main() {
         baseUnit: UnitCode.KG,
         currentStock: '6',
         minStock: '1.5',
-        categoryId: ingredientCategoryMap['Café, té y chocolate'],
+        categoryId: ingredientCategoryMap['Café, té y bebidas'],
         locationId: ingredientLocationMap['Almacén seco'],
         unitCost: '280',
         maxStock: '15',
@@ -224,7 +231,7 @@ async function main() {
         baseUnit: UnitCode.UNIT,
         currentStock: '60',
         minStock: '12',
-        categoryId: ingredientCategoryMap['Lácteos y huevo'],
+        categoryId: ingredientCategoryMap['Lácteos y refrigerados'],
         locationId: ingredientLocationMap['Refrigerador'],
         unitCost: '3.5',
         maxStock: '120',
@@ -234,7 +241,7 @@ async function main() {
         baseUnit: UnitCode.KG,
         currentStock: '1.2',
         minStock: '0.3',
-        categoryId: ingredientCategoryMap['Café, té y chocolate'],
+        categoryId: ingredientCategoryMap['Café, té y bebidas'],
         locationId: ingredientLocationMap['Almacén seco'],
         unitCost: '850',
         maxStock: '5',
@@ -448,6 +455,7 @@ async function ensureCategory(
 
 interface IngredientSeed {
   name: string;
+  /** Unidad visible con la que se escriben las cantidades de la semilla. */
   baseUnit: UnitCode;
   currentStock: string;
   minStock: string;
@@ -463,6 +471,11 @@ async function ensureIngredient(
   organizationId: string,
   data: IngredientSeed,
 ) {
+  // La base se guarda en la unidad canónica y la semilla se escribe en la
+  // unidad visible que declara cada insumo.
+  const displayUnit = data.baseUnit;
+  const baseUnit = canonicalUnit(displayUnit);
+
   return prisma.ingredient.upsert({
     where: {
       organizationId_name: { organizationId, name: data.name },
@@ -472,11 +485,18 @@ async function ensureIngredient(
       organizationId,
       name: data.name,
       sku: data.sku,
-      baseUnit: data.baseUnit,
-      currentStock: data.currentStock,
-      minStock: data.minStock,
-      maxStock: data.maxStock,
-      unitCost: data.unitCost,
+      baseUnit,
+      displayUnit,
+      currentStock: toCanonicalQuantity(data.currentStock, displayUnit),
+      minStock: toCanonicalQuantity(data.minStock, displayUnit),
+      maxStock:
+        data.maxStock !== undefined
+          ? toCanonicalQuantity(data.maxStock, displayUnit)
+          : null,
+      unitCost:
+        data.unitCost !== undefined
+          ? toCanonicalCost(data.unitCost, displayUnit)
+          : null,
       categoryId: data.categoryId,
       locationId: data.locationId,
     },

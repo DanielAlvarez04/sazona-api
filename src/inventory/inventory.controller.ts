@@ -26,6 +26,8 @@ import {
   CreateEquivalenceDto,
   CreateIngredientDto,
   CreateIngredientsBulkDto,
+  DeleteIngredientsDto,
+  SyncCoreProductsDto,
   UpdateIngredientDto,
 } from './dto/inventory.dto';
 
@@ -47,6 +49,7 @@ export class InventoryController {
     @Query('search') search?: string,
     @Query('includeInactive') includeInactive?: string,
     @Query('lowStockOnly') lowStockOnly?: string,
+    @Query('includeBranchStocks') includeBranchStocks?: string,
   ) {
     return this.inventory.listIngredients(
       user.organizationId,
@@ -54,6 +57,8 @@ export class InventoryController {
         search,
         includeInactive: includeInactive === 'true',
         lowStockOnly: lowStockOnly === 'true',
+        // Modo Global: el resumen KPI necesita el stock de cada sucursal.
+        includeBranchStocks: includeBranchStocks === 'true',
       },
       branchId,
     );
@@ -97,13 +102,14 @@ export class InventoryController {
   async importCsv(
     @CurrentUser() user: JwtUser,
     @CurrentBranch() branchId: string | null,
-    @Body() body: { csv: string },
+    @Body() body: { csv: string; mode?: string },
   ) {
     return this.inventory.importIngredientsFromCsv(
       user.organizationId,
       user.sub,
       body.csv,
       branchId,
+      body.mode,
     );
   }
 
@@ -116,6 +122,37 @@ export class InventoryController {
     @Body() dto: UpdateIngredientDto,
   ) {
     return this.inventory.updateIngredient(user.organizationId, id, dto);
+  }
+
+  @ApiOperation({ summary: 'Sincronizar productos core con el inventario' })
+  @RequirePermissions('inventory:manage')
+  @HttpCode(HttpStatus.OK)
+  @Post('ingredients/sync-core')
+  syncCoreProducts(
+    @CurrentUser() user: JwtUser,
+    @Body() dto: SyncCoreProductsDto,
+  ) {
+    return this.inventory.syncCoreProducts(
+      user.organizationId,
+      user.sub,
+      dto.products,
+      dto.removeNames,
+    );
+  }
+
+  @ApiOperation({ summary: 'Eliminar insumos permanentemente (hard delete)' })
+  @RequirePermissions('inventory:manage')
+  @HttpCode(HttpStatus.OK)
+  @Post('ingredients/bulk-delete')
+  deleteIngredients(
+    @CurrentUser() user: JwtUser,
+    @Body() dto: DeleteIngredientsDto,
+  ) {
+    return this.inventory.deleteIngredients(
+      user.organizationId,
+      dto.ids,
+      dto.coreIds,
+    );
   }
 
   @ApiOperation({ summary: 'Desactivar ingrediente' })

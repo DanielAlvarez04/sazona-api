@@ -10,6 +10,7 @@ import {
   OrderStatus,
   PaymentStatus,
   Prisma,
+  UnitCode,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -52,7 +53,14 @@ const roundInclude: Prisma.OrderRoundInclude = {
       extras: true,
       exclusions: {
         include: {
-          ingredient: { select: { id: true, name: true, baseUnit: true } },
+          ingredient: {
+            select: {
+              id: true,
+              name: true,
+              baseUnit: true,
+              displayUnit: true,
+            },
+          },
         },
       },
     },
@@ -777,6 +785,7 @@ export class OrdersService {
 
       let stockAfter: Prisma.Decimal;
       let ingredientName: string;
+      let displayUnit: UnitCode;
 
       if (order.branchId) {
         const amount = quantity.toString();
@@ -803,14 +812,18 @@ export class OrdersService {
         }
 
         const totals = await tx.$queryRaw<
-          Array<{ currentStock: Prisma.Decimal; name: string }>
+          Array<{
+            currentStock: Prisma.Decimal;
+            name: string;
+            displayUnit: UnitCode;
+          }>
         >`
           UPDATE "Ingredient"
           SET "currentStock" = "currentStock" - CAST(${amount} AS numeric),
               "updatedAt" = NOW()
           WHERE "id" = ${ingredientId}
             AND "organizationId" = ${organizationId}
-          RETURNING "currentStock", "name"
+          RETURNING "currentStock", "name", "displayUnit"
         `;
 
         if (totals.length === 0) {
@@ -819,16 +832,21 @@ export class OrdersService {
 
         stockAfter = new Prisma.Decimal(branchRows[0].quantity);
         ingredientName = totals[0].name;
+        displayUnit = totals[0].displayUnit;
       } else {
         const rows = await tx.$queryRaw<
-          Array<{ currentStock: Prisma.Decimal; name: string }>
+          Array<{
+            currentStock: Prisma.Decimal;
+            name: string;
+            displayUnit: UnitCode;
+          }>
         >`
           UPDATE "Ingredient"
           SET "currentStock" = "currentStock" - CAST(${quantity.toString()} AS numeric),
               "updatedAt" = NOW()
           WHERE "id" = ${ingredientId}
             AND "organizationId" = ${organizationId}
-          RETURNING "currentStock", "name"
+          RETURNING "currentStock", "name", "displayUnit"
         `;
 
         if (rows.length === 0) {
@@ -837,6 +855,7 @@ export class OrdersService {
 
         stockAfter = new Prisma.Decimal(rows[0].currentStock);
         ingredientName = rows[0].name;
+        displayUnit = rows[0].displayUnit;
       }
 
       await tx.inventoryMovement.create({
@@ -844,6 +863,8 @@ export class OrdersService {
           organizationId,
           branchId: order.branchId,
           ingredientId,
+          ingredientName,
+          displayUnit,
           userId,
           type: InventoryMovementType.CONSUMPTION,
           quantity: quantity.negated(),

@@ -6,9 +6,11 @@ import {
   PaymentMethod,
   PaymentStatus,
   Prisma,
+  UnitCode,
   type Role,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { fromCanonicalQuantity } from '../common/units';
 import { rolesHavePermission } from '../common/permissions';
 
 const ACTIVE_ROUNDS = [
@@ -102,6 +104,7 @@ export class DashboardService {
           id: true,
           name: true,
           baseUnit: true,
+          displayUnit: true,
           currentStock: true,
           minStock: true,
           ...(branchId
@@ -188,22 +191,32 @@ export class DashboardService {
           ? (ingredient as { branchStocks?: Array<{ quantity: Prisma.Decimal }> })
               .branchStocks?.[0]?.quantity
           : undefined;
+        const stock = branchId
+          ? (branchStock ?? new Prisma.Decimal(0))
+          : ingredient.currentStock;
+
+        if (!stock.lte(ingredient.minStock)) return null;
 
         return {
           id: ingredient.id,
           name: ingredient.name,
           baseUnit: ingredient.baseUnit,
+          displayUnit: ingredient.displayUnit,
           currentStock: Number(
-            branchId ? (branchStock ?? 0) : ingredient.currentStock,
+            fromCanonicalQuantity(stock, ingredient.displayUnit),
           ),
-          minStock: Number(ingredient.minStock),
+          minStock: Number(
+            fromCanonicalQuantity(ingredient.minStock, ingredient.displayUnit),
+          ),
+          deficit: Number(
+            fromCanonicalQuantity(
+              ingredient.minStock.minus(stock),
+              ingredient.displayUnit,
+            ).toFixed(4),
+          ),
         };
       })
-      .filter((ingredient) => ingredient.currentStock <= ingredient.minStock)
-      .map((ingredient) => ({
-        ...ingredient,
-        deficit: Number((ingredient.minStock - ingredient.currentStock).toFixed(4)),
-      }))
+      .filter((ingredient) => ingredient !== null)
       .sort((a, b) => b.deficit - a.deficit);
 
     const prepMinutes = preparedRounds
@@ -427,7 +440,8 @@ export class DashboardService {
       select: {
         type: true,
         quantity: true,
-        ingredient: { select: { name: true, baseUnit: true } },
+        ingredientName: true,
+        displayUnit: true,
       },
     })) as any[];
     const ingredients = await this.prisma.ingredient.findMany({
@@ -436,6 +450,7 @@ export class DashboardService {
         id: true,
         name: true,
         baseUnit: true,
+        displayUnit: true,
         currentStock: true,
         minStock: true,
         ...(branchId
@@ -447,7 +462,11 @@ export class DashboardService {
     const byType = new Map<InventoryMovementType, { count: number; quantity: number }>();
     const consumption = new Map<
       string,
-      { name: string; baseUnit: string; quantity: number }
+      {
+        name: string;
+        displayUnit: string;
+        quantity: Prisma.Decimal;
+      }
     >();
 
     for (const movement of movements) {
@@ -458,13 +477,15 @@ export class DashboardService {
 
       if (movement.type !== InventoryMovementType.CONSUMPTION) continue;
 
-      const key = movement.ingredient.name;
+      const key = movement.ingredientName;
       const current = consumption.get(key) ?? {
-        name: movement.ingredient.name,
-        baseUnit: movement.ingredient.baseUnit,
-        quantity: 0,
+        name: movement.ingredientName,
+        displayUnit: movement.displayUnit,
+        quantity: new Prisma.Decimal(0),
       };
-      current.quantity += Math.abs(Number(movement.quantity));
+      current.quantity = current.quantity.plus(
+        new Prisma.Decimal(movement.quantity).abs(),
+      );
       consumption.set(key, current);
     }
 
@@ -474,22 +495,32 @@ export class DashboardService {
           ? (ingredient as { branchStocks?: Array<{ quantity: Prisma.Decimal }> })
               .branchStocks?.[0]?.quantity
           : undefined;
+        const stock = branchId
+          ? (branchStock ?? new Prisma.Decimal(0))
+          : ingredient.currentStock;
+
+        if (!stock.lte(ingredient.minStock)) return null;
 
         return {
           id: ingredient.id,
           name: ingredient.name,
           baseUnit: ingredient.baseUnit,
+          displayUnit: ingredient.displayUnit,
           currentStock: Number(
-            branchId ? (branchStock ?? 0) : ingredient.currentStock,
+            fromCanonicalQuantity(stock, ingredient.displayUnit),
           ),
-          minStock: Number(ingredient.minStock),
+          minStock: Number(
+            fromCanonicalQuantity(ingredient.minStock, ingredient.displayUnit),
+          ),
+          deficit: Number(
+            fromCanonicalQuantity(
+              ingredient.minStock.minus(stock),
+              ingredient.displayUnit,
+            ).toFixed(4),
+          ),
         };
       })
-      .filter((ingredient) => ingredient.currentStock <= ingredient.minStock)
-      .map((ingredient) => ({
-        ...ingredient,
-        deficit: Number((ingredient.minStock - ingredient.currentStock).toFixed(4)),
-      }))
+      .filter((ingredient) => ingredient !== null)
       .sort((a, b) => b.deficit - a.deficit);
 
     return {
@@ -501,7 +532,17 @@ export class DashboardService {
         quantity: round(value.quantity),
       })),
       consumption: [...consumption.values()]
-        .map((row) => ({ ...row, quantity: round(row.quantity) }))
+        .map((row) => ({
+          ...row,
+          quantity: round(
+            Number(
+              fromCanonicalQuantity(
+                row.quantity,
+                row.displayUnit as UnitCode,
+              ),
+            ),
+          ),
+        }))
         .sort((a, b) => b.quantity - a.quantity)
         .slice(0, 10),
       lowStock,

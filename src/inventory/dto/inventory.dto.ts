@@ -25,7 +25,7 @@ export class ImportIngredientRowDto {
 
   @IsOptional()
   @IsEnum(UnitCode)
-  baseUnit?: UnitCode;
+  displayUnit?: UnitCode;
 
   /** Obligatoria: el SKU se deriva del prefijo de la categoría. */
   @IsString()
@@ -65,9 +65,13 @@ export class CreateIngredientDto {
   @MaxLength(120)
   name!: string;
 
+  /**
+   * Unidad con la que el usuario captura las cantidades. Se guarda como
+   * `displayUnit` y las cantidades de este DTO se interpretan en ella.
+   */
   @IsOptional()
   @IsEnum(UnitCode)
-  baseUnit?: UnitCode;
+  displayUnit?: UnitCode;
 
   /** Obligatoria: el SKU se deriva del prefijo de la categoría. */
   @IsString()
@@ -89,7 +93,7 @@ export class CreateIngredientDto {
   maxStock?: number;
 
   @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 4 })
+  @IsNumber({ maxDecimalPlaces: 6 })
   @Min(0)
   unitCost?: number;
 
@@ -103,10 +107,62 @@ export class CreateIngredientDto {
 export class CreateIngredientsBulkDto {
   @IsArray()
   @ArrayMinSize(1)
-  @ArrayMaxSize(50)
+  @ArrayMaxSize(300)
   @ValidateNested({ each: true })
   @Type(() => CreateIngredientDto)
   ingredients!: CreateIngredientDto[];
+}
+
+export class DeleteIngredientsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @IsString({ each: true })
+  ids!: string[];
+
+  /**
+   * Subconjunto de `ids` que pertenece al catálogo core. Al eliminarlos, las
+   * recetas que los usan quedan inactivas en lugar de bloquear el borrado.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsString({ each: true })
+  coreIds?: string[];
+}
+
+/** Producto del catálogo core que se quiere tener en el inventario. */
+export class SyncCoreProductDto {
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  name!: string;
+
+  /** Unidad sugerida; se guarda como unidad visible del insumo. */
+  @IsEnum(UnitCode)
+  displayUnit!: UnitCode;
+
+  @IsString()
+  @IsNotEmpty()
+  category!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  location!: string;
+}
+
+export class SyncCoreProductsDto {
+  @IsArray()
+  @ArrayMaxSize(300)
+  @ValidateNested({ each: true })
+  @Type(() => SyncCoreProductDto)
+  products!: SyncCoreProductDto[];
+
+  /** Nombres del catálogo que el usuario dejó desmarcados. */
+  @IsArray()
+  @ArrayMaxSize(300)
+  @IsString({ each: true })
+  removeNames!: string[];
 }
 
 export class UpdateIngredientDto {
@@ -118,7 +174,7 @@ export class UpdateIngredientDto {
 
   @IsOptional()
   @IsEnum(UnitCode)
-  baseUnit?: UnitCode;
+  displayUnit?: UnitCode;
 
   /**
    * Cambiar de categoría regenera el SKU con el prefijo de la nueva categoría.
@@ -144,7 +200,7 @@ export class UpdateIngredientDto {
   maxStock?: number;
 
   @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 4 })
+  @IsNumber({ maxDecimalPlaces: 6 })
   @Min(0)
   unitCost?: number;
 

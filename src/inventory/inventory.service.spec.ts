@@ -41,6 +41,7 @@ function ingredient(overrides: Record<string, unknown> = {}) {
     organizationId: 'o1',
     name: 'Leche',
     baseUnit: UnitCode.ML,
+    displayUnit: UnitCode.ML,
     currentStock: new Prisma.Decimal(0),
     minStock: new Prisma.Decimal(0),
     isActive: true,
@@ -118,33 +119,64 @@ describe('InventoryService — ingredientes y alertas', () => {
     expect(alerts[0].deficit.toString()).toBe('10');
   });
 
-  it('no permite cambiar la unidad base si hay recetas o movimientos', async () => {
+  it('permite cambiar la unidad visible aunque haya movimientos y recetas', async () => {
     const { service, prisma } = build();
     prisma.ingredient.findFirst.mockResolvedValue(ingredient());
-    prisma.recipeIngredient.count.mockResolvedValue(1);
-    prisma.inventoryMovement.count.mockResolvedValue(0);
+    prisma.ingredient.update.mockResolvedValue(
+      ingredient({ displayUnit: UnitCode.L }),
+    );
+    prisma.$transaction.mockImplementation(async (callback) =>
+      callback({ ingredient: { update: prisma.ingredient.update } }),
+    );
+
+    const updated = await service.updateIngredient('o1', 'i1', {
+      displayUnit: UnitCode.L,
+    });
+
+    expect(updated.displayUnit).toBe(UnitCode.L);
+    expect(prisma.recipeIngredient.count).not.toHaveBeenCalled();
+    expect(prisma.inventoryMovement.count).not.toHaveBeenCalled();
+  });
+
+  it('rechaza una unidad visible de otra dimensión', async () => {
+    const { service, prisma } = build();
+    prisma.ingredient.findFirst.mockResolvedValue(ingredient());
 
     await expect(
-      service.updateIngredient('o1', 'i1', { baseUnit: UnitCode.L }),
-    ).rejects.toBeInstanceOf(ConflictException);
+      service.updateIngredient('o1', 'i1', { displayUnit: UnitCode.KG }),
+    ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(prisma.ingredient.update).not.toHaveBeenCalled();
   });
 
-  it('permite cambiar la unidad base si el ingrediente está limpio', async () => {
+  it('convierte los valores capturados en la nueva unidad visible', async () => {
     const { service, prisma } = build();
-    prisma.ingredient.findFirst.mockResolvedValue(ingredient());
-    prisma.recipeIngredient.count.mockResolvedValue(0);
-    prisma.inventoryMovement.count.mockResolvedValue(0);
+    prisma.ingredient.findFirst.mockResolvedValue(
+      ingredient({ baseUnit: UnitCode.G, displayUnit: UnitCode.G }),
+    );
     prisma.ingredient.update.mockResolvedValue(
-      ingredient({ baseUnit: UnitCode.L }),
+      ingredient({ baseUnit: UnitCode.G, displayUnit: UnitCode.KG }),
+    );
+    prisma.$transaction.mockImplementation(async (callback) =>
+      callback({ ingredient: { update: prisma.ingredient.update } }),
     );
 
-    const updated = await service.updateIngredient('o1', 'i1', {
-      baseUnit: UnitCode.L,
+    await service.updateIngredient('o1', 'i1', {
+      displayUnit: UnitCode.KG,
+      minStock: 0.5,
+      maxStock: 2,
+      unitCost: 25,
     });
 
-    expect(updated.baseUnit).toBe(UnitCode.L);
+    expect(prisma.ingredient.update).toHaveBeenCalledWith({
+      where: { id: 'i1' },
+      data: expect.objectContaining({
+        displayUnit: UnitCode.KG,
+        minStock: new Prisma.Decimal(500),
+        maxStock: new Prisma.Decimal(2000),
+        unitCost: new Prisma.Decimal('0.025'),
+      }),
+    });
   });
 });
 
@@ -192,7 +224,11 @@ describe('InventoryService — ajustes', () => {
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([{ currentStock: '1250.5' }]),
       inventoryMovement: {
-        create: jest.fn(async ({ data }) => ({ id: 'm1', ...data })),
+        create: jest.fn(async ({ data }) => ({
+          id: 'm1',
+          ingredient: { displayUnit: UnitCode.ML },
+          ...data,
+        })),
       },
     };
     prisma.$transaction.mockImplementation(async (callback) => callback(tx));
@@ -215,7 +251,10 @@ describe('InventoryService — ajustes', () => {
     const { service, prisma } = build();
     prisma.inventoryMovement.findUnique.mockResolvedValue({
       id: 'm-existente',
+      quantity: new Prisma.Decimal(5),
       stockAfter: new Prisma.Decimal(10),
+      displayUnit: UnitCode.ML,
+      ingredient: { displayUnit: UnitCode.ML },
     });
 
     const result = await service.adjust('o1', 'u1', {

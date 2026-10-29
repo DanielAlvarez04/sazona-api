@@ -11,7 +11,17 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { QuantityConverter } from '../common/quantity-converter.service';
-import { toQuantity, unitDefinition } from '../common/units';
+import {
+  canonicalFactor,
+  canonicalUnit,
+  fromCanonicalQuantity,
+  sameDimension,
+  toCanonicalCost,
+  toCanonicalQuantity,
+  toDisplayCost,
+  toQuantity,
+  unitDefinition,
+} from '../common/units';
 import {
   CreateAdjustmentDto,
   CreateEquivalenceDto,
@@ -24,6 +34,8 @@ export interface IngredientFilters {
   search?: string;
   includeInactive?: boolean;
   lowStockOnly?: boolean;
+  /** Modo Global: devuelve el stock de todas las sucursales. */
+  includeBranchStocks?: boolean;
 }
 
 export interface MovementFilters {
@@ -36,10 +48,23 @@ export interface MovementFilters {
 }
 
 const movementInclude = {
-  ingredient: { select: { id: true, name: true, baseUnit: true } },
+  ingredient: {
+    select: {
+      id: true,
+      name: true,
+      baseUnit: true,
+      displayUnit: true,
+    },
+  },
   user: { select: { id: true, name: true, email: true } },
   branch: { select: { id: true, name: true } },
 } as const;
+
+/**
+ * `referenceType` del movimiento que registra el stock inicial al crear un
+ * insumo. Sirve para distinguir el alta de los ajustes manuales en el kardex.
+ */
+const INGREDIENT_CREATED_REFERENCE = 'INGREDIENT_CREATED';
 
 @Injectable()
 export class InventoryService {
@@ -64,25 +89,32 @@ export class InventoryService {
           : {}),
       },
       include: {
-        _count: { select: { recipeIngredients: true, variants: true } },
-        category: { select: { id: true, name: true, isCore: true } },
-        location: { select: { id: true, name: true, isCore: true } },
-        variants: {
-          orderBy: { sequence: 'asc' },
+        _count: {
           select: {
-            id: true,
-            name: true,
-            sku: true,
-            sequence: true,
-            unitCost: true,
-            minStock: true,
-            maxStock: true,
-            isActive: true,
+            recipeIngredients: true,
+            inventoryMovements: true,
           },
         },
-        ...(branchId
-          ? { branchStocks: { where: { branchId }, select: { quantity: true } } }
-          : {}),
+        category: { select: { id: true, name: true, isCore: true } },
+        location: { select: { id: true, name: true, isCore: true } },
+        ...(filters.includeBranchStocks
+          ? {
+              branchStocks: {
+                select: {
+                  branchId: true,
+                  quantity: true,
+                  branch: { select: { id: true, name: true } },
+                },
+              },
+            }
+          : branchId
+            ? {
+                branchStocks: {
+                  where: { branchId },
+                  select: { branchId: true, quantity: true },
+                },
+              }
+            : {}),
       },
       orderBy: { name: 'asc' },
     });
@@ -92,23 +124,53 @@ export class InventoryService {
         // Con sucursal activa se muestra su existencia; el total de la
         // organización se conserva en `organizationStock`. Si la sucursal aún
         // no tiene fila de stock, su existencia es 0 (no el total de la org).
+        const branchStocks =
+          (
+            ingredient as {
+              branchStocks?: Array<{
+                branchId: string;
+                quantity: Prisma.Decimal;
+                branch?: { id: string; name: string };
+              }>;
+            }
+          ).branchStocks ?? [];
         const branchStock = branchId
-          ? (ingredient as { branchStocks?: Array<{ quantity: Prisma.Decimal }> })
-              .branchStocks?.[0]?.quantity
+          ? branchStocks.find((row) => row.branchId === branchId)?.quantity
           : undefined;
         const stock = branchId
           ? (branchStock ?? new Prisma.Decimal(0))
           : ingredient.currentStock;
+        const displayUnit = ingredient.displayUnit;
+        const deficit = stock.lt(ingredient.minStock)
+          ? ingredient.minStock.minus(stock)
+          : new Prisma.Decimal(0);
 
+        // Se devuelve todo en la unidad visible del ingrediente; la BD sigue
+        // guardando la unidad canónica.
         return {
           ...ingredient,
-          currentStock: stock,
-          organizationStock: ingredient.currentStock,
+          currentStock: fromCanonicalQuantity(stock, displayUnit),
+          organizationStock: fromCanonicalQuantity(
+            ingredient.currentStock,
+            displayUnit,
+          ),
+          minStock: fromCanonicalQuantity(ingredient.minStock, displayUnit),
+          maxStock:
+            ingredient.maxStock == null
+              ? null
+              : fromCanonicalQuantity(ingredient.maxStock, displayUnit),
+          unitCost:
+            ingredient.unitCost == null
+              ? null
+              : toDisplayCost(ingredient.unitCost, displayUnit),
+          branchStocks: branchStocks.map((row) => ({
+            branchId: row.branchId,
+            ...(row.branch ? { branch: row.branch } : {}),
+            quantity: fromCanonicalQuantity(row.quantity, displayUnit),
+          })),
           branchId,
           isLowStock: stock.lte(ingredient.minStock),
-          deficit: stock.lt(ingredient.minStock)
-            ? ingredient.minStock.minus(stock)
-            : new Prisma.Decimal(0),
+          deficit: fromCanonicalQuantity(deficit, displayUnit),
         };
       })
       .filter((ingredient) => !filters.lowStockOnly || ingredient.isLowStock);
@@ -127,7 +189,12 @@ export class InventoryService {
     const category = await this.resolveCategory(organizationId, dto.categoryId);
     const sku = await this.generateSku(organizationId, category.name);
 
-    const initialStock = toQuantity(dto.currentStock ?? 0);
+    // Las cantidades y el costo llegan en la unidad visible y se guardan en la
+    // unidad canónica de la dimensión.
+    const displayUnit = dto.displayUnit ?? UnitCode.UNIT;
+    const baseUnit = canonicalUnit(displayUnit);
+    const initialStock = toCanonicalQuantity(dto.currentStock ?? 0, displayUnit);
+    const minStock = toCanonicalQuantity(dto.minStock ?? 0, displayUnit);
 
     const ingredient = await this.prisma.$transaction(async (tx) => {
       const created = await tx.ingredient.create({
@@ -135,10 +202,17 @@ export class InventoryService {
           organizationId,
           name,
           sku,
-          baseUnit: dto.baseUnit ?? UnitCode.UNIT,
-          minStock: toQuantity(dto.minStock ?? 0),
-          maxStock: dto.maxStock !== undefined ? toQuantity(dto.maxStock) : null,
-          unitCost: dto.unitCost !== undefined ? toQuantity(dto.unitCost) : null,
+          baseUnit,
+          displayUnit,
+          minStock,
+          maxStock:
+            dto.maxStock !== undefined
+              ? toCanonicalQuantity(dto.maxStock, displayUnit)
+              : null,
+          unitCost:
+            dto.unitCost !== undefined
+              ? toCanonicalCost(dto.unitCost, displayUnit)
+              : null,
           categoryId: category.id,
           locationId: dto.locationId || null,
         },
@@ -171,12 +245,14 @@ export class InventoryService {
             organizationId,
             branchId,
             ingredientId: created.id,
+            ingredientName: name,
+            displayUnit,
             userId,
             type: InventoryMovementType.ADJUSTMENT,
             quantity: initialStock,
             stockAfter: initialStock,
             reason: 'Stock inicial',
-            referenceType: 'INGREDIENT_CREATED',
+            referenceType: INGREDIENT_CREATED_REFERENCE,
           },
         });
       }
@@ -235,18 +311,31 @@ export class InventoryService {
    * Formato esperado (cabecera opcional):
    * nombre,unidad,categoria,ubicacion,costoUnitario,stockMaximo,stockInicial,stockMinimo
    *
-   * - baseUnit: código de unidad (G, KG, ML, L, UNIT, etc.)
-   * - currentStock/minStock/maxStock/unitCost: números (0 por defecto)
+   * - unidad: unidad visible del insumo (G, KG, ML, L, UNIT, etc.)
+   * - currentStock/minStock/maxStock/unitCost: números en esa unidad visible
    * - categoria: obligatoria (nombre exacto); el SKU se genera automáticamente
    * - ubicacion: nombre de la ubicación (opcional)
    * - Las unidades deben ser códigos válidos del enum UnitCode
+   *
+   * `mode` decide qué hacer con los nombres repetidos (en el archivo o ya
+   * existentes):
+   * - `exclude`: se omiten (por defecto).
+   * - `duplicate`: se crean con el sufijo "[ DUPLICADO]".
+   * - `overwrite`: la fila reemplaza los datos del insumo existente; dentro del
+   *   archivo gana la última aparición. El stock actual no se toca: solo cambia
+   *   con ajustes auditables.
    */
   async importIngredientsFromCsv(
     organizationId: string | null,
     userId: string,
     csvText: string,
     branchId: string | null = null,
+    mode: string = 'exclude',
   ) {
+    if (mode !== 'exclude' && mode !== 'duplicate' && mode !== 'overwrite') {
+      throw new BadRequestException(`Modo de importación inválido: ${mode}`);
+    }
+
     const lines = csvText
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -309,7 +398,7 @@ export class InventoryService {
         );
       }
 
-      const baseUnit = (cols[1]?.toUpperCase() ?? 'UNIT') as UnitCode;
+      const displayUnit = (cols[1]?.toUpperCase() ?? 'UNIT') as UnitCode;
       const categoryName = cols[2]?.toLowerCase().trim();
       const locationName = cols[3]?.toLowerCase().trim();
       const unitCost = cols[4] ? Number(cols[4].replace(',', '.')) : undefined;
@@ -317,7 +406,7 @@ export class InventoryService {
       const currentStock = cols[6] ? Number(cols[6].replace(',', '.')) : 0;
       const minStock = cols[7] ? Number(cols[7].replace(',', '.')) : 0;
 
-      if (baseUnit && !Object.values(UnitCode).includes(baseUnit)) {
+      if (displayUnit && !Object.values(UnitCode).includes(displayUnit)) {
         throw new BadRequestException(
           `Línea ${i + 1}: unidad "${cols[1]}" no válida. Unidades válidas: ${Object.values(UnitCode).join(', ')}`,
         );
@@ -366,7 +455,7 @@ export class InventoryService {
 
       dtos.push({
         name: name.trim(),
-        baseUnit,
+        displayUnit,
         categoryId,
         locationId,
         unitCost,
@@ -380,33 +469,98 @@ export class InventoryService {
       throw new BadRequestException('No se encontraron ingredientes válidos en el CSV');
     }
 
-    // Validar duplicados en la lista
-    const seen = new Set<string>();
-    for (const dto of dtos) {
-      const key = dto.name.toLowerCase();
-      if (seen.has(key)) {
-        throw new BadRequestException(
-          `"${dto.name}" está repetido en el CSV`,
-        );
+    // Nombres ya existentes en el inventario (comparación sin distinguir
+    // mayúsculas, igual que la restricción de unicidad).
+    const existing = await this.prisma.ingredient.findMany({
+      where: { organizationId },
+      select: { id: true, name: true },
+    });
+    const existingByName = new Map(
+      existing.map((item) => [item.name.trim().toLowerCase(), item.id]),
+    );
+
+    const usedNames = new Set(existingByName.keys());
+    /** Insumos nuevos a crear, indexados por nombre normalizado. */
+    const pending = new Map<string, ImportIngredientRowDto>();
+    /** Insumos existentes a sobreescribir, indexados por id. */
+    const overwrites = new Map<string, ImportIngredientRowDto>();
+
+    /** Genera un nombre libre añadiendo el sufijo de duplicado. */
+    const makeDuplicateName = (name: string) => {
+      let candidate = `${name} [ DUPLICADO]`;
+      let counter = 2;
+
+      while (usedNames.has(candidate.toLowerCase())) {
+        candidate = `${name} [ DUPLICADO ${counter}]`;
+        counter += 1;
       }
-      seen.add(key);
-    }
 
-    // Validar que no existan en la BD
+      usedNames.add(candidate.toLowerCase());
+      return candidate;
+    };
+
     for (const dto of dtos) {
-      await this.assertNameAvailable(organizationId, dto.name);
+      const key = dto.name.trim().toLowerCase();
+      const existingId = existingByName.get(key);
+      const alreadyInFile = pending.has(key);
+
+      if (existingId) {
+        if (mode === 'exclude') continue;
+
+        if (mode === 'overwrite') {
+          // La última fila del archivo manda.
+          overwrites.set(existingId, dto);
+          continue;
+        }
+
+        const duplicate = { ...dto, name: makeDuplicateName(dto.name) };
+        pending.set(duplicate.name.toLowerCase(), duplicate);
+        continue;
+      }
+
+      if (alreadyInFile) {
+        if (mode === 'exclude') continue;
+
+        if (mode === 'overwrite') {
+          // La fila posterior reemplaza por completo a la anterior.
+          pending.set(key, dto);
+          continue;
+        }
+
+        const duplicate = { ...dto, name: makeDuplicateName(dto.name) };
+        pending.set(duplicate.name.toLowerCase(), duplicate);
+        continue;
+      }
+
+      usedNames.add(key);
+      pending.set(key, dto);
     }
 
-    // Crear todos en una transacción
+    const updated = [];
+
+    for (const [id, dto] of overwrites) {
+      updated.push(
+        await this.updateIngredient(organizationId, id, {
+          name: dto.name,
+          displayUnit: dto.displayUnit,
+          categoryId: dto.categoryId,
+          locationId: dto.locationId,
+          unitCost: dto.unitCost,
+          minStock: dto.minStock,
+          maxStock: dto.maxStock,
+        }),
+      );
+    }
+
     const created = [];
 
-    for (const dto of dtos) {
+    for (const dto of pending.values()) {
       created.push(
         await this.createIngredient(organizationId, userId, dto, branchId),
       );
     }
 
-    return created;
+    return [...updated, ...created];
   }
 
   async updateIngredient(
@@ -436,35 +590,34 @@ export class InventoryService {
       }
     }
 
-    if (dto.baseUnit && dto.baseUnit !== ingredient.baseUnit) {
-      const [inRecipes, movements] = await Promise.all([
-        this.prisma.recipeIngredient.count({
-          where: { ingredientId: ingredient.id },
-        }),
-        this.prisma.inventoryMovement.count({
-          where: { ingredientId: ingredient.id },
-        }),
-      ]);
-
-      if (inRecipes > 0 || movements > 0) {
-        throw new ConflictException(
-          'No se puede cambiar la unidad base de un ingrediente con recetas o movimientos. Crea un ingrediente nuevo y ajusta el stock',
-        );
-      }
+    // La unidad visible puede cambiar en cualquier momento: solo se valida que
+    // siga midiendo lo mismo. Las cantidades guardadas no se reescriben.
+    if (dto.displayUnit !== undefined && !sameDimension(dto.displayUnit, ingredient.baseUnit)) {
+      throw new BadRequestException(
+        'La unidad debe ser de la misma dimensión que el insumo (masa, volumen o conteo)',
+      );
     }
+
+    const displayUnit = dto.displayUnit ?? ingredient.displayUnit;
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const next = await tx.ingredient.update({
         where: { id: ingredient.id },
         data: {
           name: dto.name?.trim(),
-          baseUnit: dto.baseUnit,
+          displayUnit: dto.displayUnit,
           minStock:
-            dto.minStock === undefined ? undefined : toQuantity(dto.minStock),
+            dto.minStock === undefined
+              ? undefined
+              : toCanonicalQuantity(dto.minStock, displayUnit),
           maxStock:
-            dto.maxStock === undefined ? undefined : toQuantity(dto.maxStock),
+            dto.maxStock === undefined
+              ? undefined
+              : toCanonicalQuantity(dto.maxStock, displayUnit),
           unitCost:
-            dto.unitCost === undefined ? undefined : toQuantity(dto.unitCost),
+            dto.unitCost === undefined
+              ? undefined
+              : toCanonicalCost(dto.unitCost, displayUnit),
           ...(nextCategoryId ? { categoryId: nextCategoryId } : {}),
           ...(nextSku ? { sku: nextSku } : {}),
           locationId: dto.locationId || null,
@@ -499,6 +652,255 @@ export class InventoryService {
     return { ok: true };
   }
 
+  /**
+   * Elimina insumos definitivamente (hard delete).
+   *
+   * Se borra también su kardex, stock por sucursal, equivalencias, consumo en
+   * extras y exclusiones. Para los productos del catálogo core (`coreIds`),
+   * las recetas que los usan quedan inactivas. Los productos que no son core
+   * siguen bloqueados si están en una receta activa, y nadie se borra si
+   * aparece en pedidos.
+   */
+  async deleteIngredients(
+    organizationId: string | null,
+    ids: string[],
+    coreIds: string[] = [],
+  ) {
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
+
+    if (uniqueIds.length === 0) {
+      throw new BadRequestException('Selecciona al menos un insumo');
+    }
+
+    const ingredients = await this.prisma.ingredient.findMany({
+      where: {
+        id: { in: uniqueIds },
+        ...(organizationId ? { organizationId } : {}),
+      },
+      select: { id: true, name: true },
+    });
+
+    if (ingredients.length === 0) {
+      throw new NotFoundException('Insumo no encontrado');
+    }
+
+    const ingredientIds = ingredients.map((ingredient) => ingredient.id);
+
+    // Los productos del catálogo core no bloquean el borrado por recetas: las
+    // recetas que los usan quedan inactivas.
+    const coreSet = new Set(
+      coreIds.filter((id) => ingredientIds.includes(id)),
+    );
+    const nonCoreIds = ingredientIds.filter((id) => !coreSet.has(id));
+
+    // Los pedidos históricos («sin cebolla») deben conservarse: si el insumo
+    // aparece en uno, se bloquea el borrado y se sugiere desactivarlo.
+    const inOrders = await this.prisma.orderItemExclusion.findMany({
+      where: { ingredientId: { in: ingredientIds } },
+      select: { ingredient: { select: { name: true } } },
+      take: 5,
+    });
+
+    if (inOrders.length > 0) {
+      const names = [...new Set(inOrders.map((row) => row.ingredient.name))];
+      throw new ConflictException(
+        `No se puede eliminar: ${names.join(', ')} aparece en pedidos. Desactívalo para ocultarlo del inventario`,
+      );
+    }
+
+    // Los productos que no son core mantienen la regla anterior: no se pueden
+    // borrar si están en una receta activa.
+    if (nonCoreIds.length > 0) {
+      const inActiveRecipes = await this.prisma.recipeIngredient.findMany({
+        where: {
+          ingredientId: { in: nonCoreIds },
+          recipe: { isActive: true },
+        },
+        select: { ingredient: { select: { name: true } } },
+        take: 5,
+      });
+
+      if (inActiveRecipes.length > 0) {
+        const names = [
+          ...new Set(inActiveRecipes.map((row) => row.ingredient.name)),
+        ];
+        throw new ConflictException(
+          `No se puede eliminar: ${names.join(', ')} se usa en recetas activas. Quítalo de las recetas o desactívalo`,
+        );
+      }
+    }
+
+    if (coreSet.size > 0) {
+      const recipeRows = await this.prisma.recipeIngredient.findMany({
+        where: { ingredientId: { in: [...coreSet] } },
+        select: { recipeId: true },
+      });
+
+      const recipeIds = [...new Set(recipeRows.map((row) => row.recipeId))];
+
+      if (recipeIds.length > 0) {
+        await this.prisma.recipe.updateMany({
+          where: { id: { in: recipeIds } },
+          data: { isActive: false },
+        });
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // La FK de `InventoryMovement` es `SetNull`: el kardex se conserva.
+      await tx.ingredient.deleteMany({ where: { id: { in: ingredientIds } } });
+    });
+
+    return { ok: true, deletedCount: ingredientIds.length };
+  }
+
+  /**
+   * Sincroniza el catálogo core con el inventario de la organización.
+   *
+   * - Crea los productos marcados que aún no existen (sin stock inicial).
+   * - Retira los desmarcados que existan. Si están en recetas, esas recetas
+   *   quedan inactivas. Si aparecen en pedidos, se conservan.
+   */
+  async syncCoreProducts(
+    organizationId: string | null,
+    userId: string,
+    products: Array<{
+      name: string;
+      displayUnit: UnitCode;
+      category: string;
+      location: string;
+    }>,
+    removeNames: string[],
+  ) {
+    const [categories, locations, ingredients] = await Promise.all([
+      this.prisma.ingredientCategory.findMany({
+        where: {
+          isActive: true,
+          OR: [{ organizationId }, { organizationId: null }],
+        },
+        select: { id: true, name: true },
+      }),
+      this.prisma.ingredientLocation.findMany({
+        where: {
+          isActive: true,
+          OR: [{ organizationId }, { organizationId: null }],
+        },
+        select: { id: true, name: true },
+      }),
+      this.prisma.ingredient.findMany({
+        where: { ...(organizationId ? { organizationId } : {}) },
+        select: { id: true, name: true },
+      }),
+    ]);
+
+    const categoryIds = new Map(
+      categories.map((category) => [category.name.trim().toLowerCase(), category.id]),
+    );
+    const locationIds = new Map(
+      locations.map((location) => [location.name.trim().toLowerCase(), location.id]),
+    );
+    const existingIds = new Map(
+      ingredients.map((ingredient) => [
+        ingredient.name.trim().toLowerCase(),
+        ingredient.id,
+      ]),
+    );
+
+    const created: string[] = [];
+    const removed: string[] = [];
+    const skipped: Array<{ name: string; reason: string }> = [];
+    const seen = new Set<string>();
+
+    for (const item of products) {
+      const name = item.name.trim();
+      const key = name.toLowerCase();
+
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      if (existingIds.has(key)) continue;
+
+      const categoryId = categoryIds.get(item.category.trim().toLowerCase());
+      if (!categoryId) {
+        skipped.push({ name, reason: 'categoría no encontrada' });
+        continue;
+      }
+
+      const locationId = locationIds.get(item.location.trim().toLowerCase());
+      if (!locationId) {
+        skipped.push({ name, reason: 'ubicación no encontrada' });
+        continue;
+      }
+
+      try {
+        const ingredient = await this.createIngredient(
+          organizationId,
+          userId,
+          {
+            name,
+            displayUnit: item.displayUnit,
+            categoryId,
+            locationId,
+            currentStock: 0,
+            minStock: 0,
+          },
+          null,
+        );
+
+        existingIds.set(key, ingredient.id);
+        created.push(name);
+      } catch (error) {
+        skipped.push({
+          name,
+          reason:
+            error instanceof Error ? error.message : 'no se pudo crear',
+        });
+      }
+    }
+
+    for (const rawName of removeNames) {
+      const name = rawName.trim();
+      const key = name.toLowerCase();
+      const id = existingIds.get(key);
+
+      if (!id) continue;
+
+      const inOrders = await this.prisma.orderItemExclusion.count({
+        where: { ingredientId: id },
+      });
+
+      if (inOrders > 0) {
+        skipped.push({ name, reason: 'aparece en pedidos' });
+        continue;
+      }
+
+      // Es un producto del catálogo core: las recetas que lo usan quedan
+      // inactivas en lugar de bloquear el retiro.
+      const recipeRows = await this.prisma.recipeIngredient.findMany({
+        where: { ingredientId: id },
+        select: { recipeId: true },
+      });
+      const recipeIds = [...new Set(recipeRows.map((row) => row.recipeId))];
+
+      if (recipeIds.length > 0) {
+        await this.prisma.recipe.updateMany({
+          where: { id: { in: recipeIds } },
+          data: { isActive: false },
+        });
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        // La FK es `SetNull`: los movimientos sobreviven con su snapshot.
+        await tx.ingredient.delete({ where: { id } });
+      });
+
+      existingIds.delete(key);
+      removed.push(name);
+    }
+
+    return { created, removed, skipped };
+  }
+
   // --------------------------------------------------------------------------
   // Movimientos
   // --------------------------------------------------------------------------
@@ -516,7 +918,7 @@ export class InventoryService {
       });
 
       if (existing) {
-        return { ...existing, duplicated: true };
+        return this.toDisplayMovement({ ...existing, duplicated: true });
       }
     }
 
@@ -551,7 +953,7 @@ export class InventoryService {
         );
       }
 
-      return await this.prisma.$transaction(async (tx) => {
+      const movement = await this.prisma.$transaction(async (tx) => {
         const stockAfter = branchId
           ? await this.applyBranchDelta(
               tx,
@@ -572,6 +974,8 @@ export class InventoryService {
             organizationId,
             branchId,
             ingredientId: ingredient.id,
+            ingredientName: ingredient.name,
+            displayUnit: ingredient.displayUnit,
             userId,
             type: InventoryMovementType.ADJUSTMENT,
             quantity,
@@ -584,6 +988,8 @@ export class InventoryService {
           include: movementInclude,
         });
       });
+
+      return this.toDisplayMovement(movement);
     } catch (error) {
       if (
         dto.dedupeKey &&
@@ -595,7 +1001,7 @@ export class InventoryService {
           include: movementInclude,
         });
 
-        return { ...existing, duplicated: true };
+        return this.toDisplayMovement({ ...existing, duplicated: true });
       }
 
       throw error;
@@ -675,7 +1081,7 @@ export class InventoryService {
     return new Prisma.Decimal(rows[0].currentStock);
   }
 
-  listMovements(
+  async listMovements(
     organizationId: string | null,
     filters: MovementFilters = {},
     branchId: string | null = null,
@@ -683,7 +1089,7 @@ export class InventoryService {
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
     const offset = Math.max(filters.offset ?? 0, 0);
 
-    return this.prisma.inventoryMovement.findMany({
+    const movements = await this.prisma.inventoryMovement.findMany({
       where: {
         ...(organizationId ? { organizationId } : {}),
         ...(branchId ? { branchId } : {}),
@@ -703,6 +1109,28 @@ export class InventoryService {
       take: limit,
       skip: offset,
     });
+
+    return movements.map((movement) => this.toDisplayMovement(movement));
+  }
+
+  /** Expresa un movimiento en la unidad visible guardada en el kardex. */
+  private toDisplayMovement<
+    T extends {
+      quantity: Prisma.Decimal;
+      stockAfter: Prisma.Decimal | null;
+      displayUnit: UnitCode;
+    },
+  >(movement: T) {
+    const displayUnit = movement.displayUnit;
+
+    return {
+      ...movement,
+      quantity: fromCanonicalQuantity(movement.quantity, displayUnit),
+      stockAfter:
+        movement.stockAfter === null
+          ? null
+          : fromCanonicalQuantity(movement.stockAfter, displayUnit),
+    };
   }
 
   async listAlerts(
@@ -729,17 +1157,19 @@ export class InventoryService {
     // Core categories that are shared across all organizations (organizationId = null)
     const coreCategories = [
       { name: 'Frutas y verduras', description: 'Productos frescos de origen vegetal', sortOrder: 1 },
-      { name: 'Abarrotes y secos', description: 'Alimentos no perecederos, granos, harinas, conservas', sortOrder: 2 },
-      { name: 'Lácteos y huevo', description: 'Leche, quesos, yogures, huevos y derivados', sortOrder: 3 },
-      { name: 'Carnes y proteínas', description: 'Carnes rojas, aves, pescados, mariscos, legumbres', sortOrder: 4 },
-      { name: 'Café, té y chocolate', description: 'Café en grano/molido, tés, cacao, chocolate', sortOrder: 5 },
-      { name: 'Bebidas e ingredientes para bebidas', description: 'Jugos, refrescos, alcoholes, syrups, bases', sortOrder: 6 },
-      { name: 'Aceites, salsas y condimentos', description: 'Aceites, vinagres, salsas, especias, adobos', sortOrder: 7 },
-      { name: 'Panadería y tortillas', description: 'Pan, tortillas, masas, productos de panadería', sortOrder: 8 },
-      { name: 'Desechables y empaques', description: 'Vasos, cubiertos, servilletas, bolsas, film', sortOrder: 9 },
-      { name: 'Limpieza e higiene', description: 'Detergentes, desinfectantes, jabones, papel', sortOrder: 10 },
-      { name: 'Material de cocina', description: 'Utensilios, ollas, sartenes, cuchillos, equipos', sortOrder: 11 },
-      { name: 'Otros insumos', description: 'Todo lo que no encaje en las categorías anteriores', sortOrder: 12 },
+      { name: 'Carnes, aves y pescados', description: 'Carnes rojas, aves, pescados y mariscos', sortOrder: 2 },
+      { name: 'Lácteos y refrigerados', description: 'Leche, quesos, yogures, huevos y productos refrigerados', sortOrder: 3 },
+      { name: 'Congelados', description: 'Productos congelados listos para usar', sortOrder: 4 },
+      { name: 'Abarrotes y productos secos', description: 'Alimentos no perecederos, granos y harinas', sortOrder: 5 },
+      { name: 'Aceites, salsas y condimentos', description: 'Aceites, vinagres, salsas, especias y adobos', sortOrder: 6 },
+      { name: 'Panadería y tortillería', description: 'Pan, tortillas, masas y productos de panadería', sortOrder: 7 },
+      { name: 'Café, té y bebidas', description: 'Café, té, cacao, jugos, refrescos y bases para bebidas', sortOrder: 8 },
+      { name: 'Enlatados, conservas y encurtidos', description: 'Latas, conservas y encurtidos', sortOrder: 9 },
+      { name: 'Repostería y decoración', description: 'Insumos de repostería, coberturas y decoración', sortOrder: 10 },
+      { name: 'Desechables y empaques', description: 'Vasos, cubiertos, servilletas, bolsas y film', sortOrder: 11 },
+      { name: 'Limpieza e higiene', description: 'Detergentes, desinfectantes, jabones y papel', sortOrder: 12 },
+      { name: 'Artículos de operación', description: 'Utensilios, equipo menor y artículos de operación', sortOrder: 13 },
+      { name: 'Bebidas alcohólicas y coctelería', description: 'Licores, cervezas, vinos y mezcladores', sortOrder: 14 },
     ];
 
     // Core locations shared globally (organizationId = null)
@@ -754,18 +1184,23 @@ export class InventoryService {
       { name: 'Bodega auxiliar', description: 'Almacén secundario / overflow', sortOrder: 8 },
     ];
 
-    // Insert core categories
+    // Insert or refresh core categories. Se busca por nombre porque el índice
+    // único `(organizationId, name)` no detecta duplicados con `NULL`.
     for (const cat of coreCategories) {
-      try {
-        await this.prisma.ingredientCategory.create({
-          data: { organizationId: null as any, ...cat, isCore: true, isActive: true },
+      const existing = await this.prisma.ingredientCategory.findFirst({
+        where: { organizationId: null, name: cat.name },
+        select: { id: true },
+      });
+
+      if (existing) {
+        await this.prisma.ingredientCategory.update({
+          where: { id: existing.id },
+          data: { ...cat, isCore: true, isActive: true },
         });
-      } catch (e) {
-        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-          // duplicate, ignore
-        } else {
-          throw e;
-        }
+      } else {
+        await this.prisma.ingredientCategory.create({
+          data: { organizationId: null, ...cat, isCore: true, isActive: true },
+        });
       }
     }
 
@@ -832,9 +1267,36 @@ export class InventoryService {
   async listEquivalences(organizationId: string | null, ingredientId: string) {
     const ingredient = await this.getIngredient(organizationId, ingredientId);
 
-    return this.prisma.ingredientEquivalence.findMany({
+    const equivalences = await this.prisma.ingredientEquivalence.findMany({
       where: { ingredientId: ingredient.id },
       orderBy: { createdAt: 'asc' },
+    });
+
+    // Se guardan contra la unidad canónica; la UI las ve contra la visible.
+    const displayFactor = canonicalFactor(ingredient.displayUnit);
+
+    return equivalences.map((equivalence) => {
+      if (equivalence.toUnit === ingredient.baseUnit) {
+        return {
+          ...equivalence,
+          toUnit: ingredient.displayUnit,
+          factor: equivalence.factor
+            .dividedBy(displayFactor)
+            .toDecimalPlaces(6, Prisma.Decimal.ROUND_HALF_UP),
+        };
+      }
+
+      if (equivalence.fromUnit === ingredient.baseUnit) {
+        return {
+          ...equivalence,
+          fromUnit: ingredient.displayUnit,
+          factor: equivalence.factor
+            .times(displayFactor)
+            .toDecimalPlaces(6, Prisma.Decimal.ROUND_HALF_UP),
+        };
+      }
+
+      return equivalence;
     });
   }
 
@@ -858,13 +1320,21 @@ export class InventoryService {
       );
     }
 
+    // Se normaliza a unidades canónicas: 1 fromCanonical = factor' toCanonical.
+    const fromUnit = canonicalUnit(dto.fromUnit);
+    const toUnit = canonicalUnit(dto.toUnit);
+    const factor = new Prisma.Decimal(dto.factor)
+      .times(canonicalFactor(dto.fromUnit))
+      .dividedBy(canonicalFactor(dto.toUnit))
+      .toDecimalPlaces(6, Prisma.Decimal.ROUND_HALF_UP);
+
     try {
       return await this.prisma.ingredientEquivalence.create({
         data: {
           ingredientId: ingredient.id,
-          fromUnit: dto.fromUnit,
-          toUnit: dto.toUnit,
-          factor: new Prisma.Decimal(dto.factor),
+          fromUnit,
+          toUnit,
+          factor,
           note: dto.note?.trim() || null,
         },
       });
@@ -915,21 +1385,6 @@ export class InventoryService {
     return ingredient;
   }
 
-  private async getVariant(organizationId: string | null, id: string) {
-    const variant = await this.prisma.ingredientVariant.findFirst({
-      where: {
-        id,
-        ...(organizationId ? { ingredient: { organizationId } } : {}),
-      },
-    });
-
-    if (!variant) {
-      throw new NotFoundException('Variante no encontrada');
-    }
-
-    return variant;
-  }
-
   /**
    * Valida que la categoría exista (core o de la organización) y esté activa.
    * Es obligatoria porque de su nombre se deriva el SKU.
@@ -963,7 +1418,7 @@ export class InventoryService {
    * artículos y preposiciones). Si hay menos palabras, completa con las
    * siguientes letras de la última.
    *
-   * Ej.: "Frutas y verduras" → FVE · "Otros insumos" → OIN
+   * Ej.: "Frutas y verduras" → FVE · "Artículos de operación" → AOP
    */
   private categoryPrefix(name: string): string {
     const stopWords = new Set([

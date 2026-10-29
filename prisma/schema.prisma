@@ -366,11 +366,14 @@ model Ingredient {
   organizationId String?
   name           String
   sku            String?  // Código interno / referencia proveedor
-  baseUnit       UnitCode @default(UNIT) // Todas las cantidades se guardan en esta unidad
+  /** Unidad canónica de almacenamiento: siempre G, ML o UNIT. */
+  baseUnit       UnitCode @default(UNIT)
+  /** Unidad con la que el usuario ve y captura las cantidades (misma dimensión). */
+  displayUnit    UnitCode @default(UNIT)
   currentStock   Decimal  @db.Decimal(12, 4) @default(0.0000)
   minStock       Decimal  @db.Decimal(12, 4) @default(0.0000)
   maxStock       Decimal? @db.Decimal(12, 4) // Existencia máxima (opcional)
-  unitCost       Decimal? @db.Decimal(12, 4) // Costo unitario en moneda base
+  unitCost       Decimal? @db.Decimal(12, 6) // Costo por unidad canónica
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -388,7 +391,6 @@ model Ingredient {
   extraIngredients ProductExtraIngredient[]
   orderItemExclusions OrderItemExclusion[]
   branchStocks   BranchStock[]
-  variants       IngredientVariant[]
 
   @@unique([organizationId, name])
   @@unique([organizationId, sku])
@@ -399,6 +401,7 @@ model Ingredient {
 
 /// Equivalencia explícita entre dimensiones distintas para UN ingrediente
 /// (ej. 1 taza de harina = 120 g). Nunca se deduce masa ↔ volumen.
+/// Las unidades implicadas se normalizan a la canónica de su dimensión.
 model IngredientCategory {
   id            String   @id @default(cuid())
   organizationId String?
@@ -486,7 +489,7 @@ model ComboComponent {
   @@index([componentProductId])
 }
 
-/// Consumo de inventario de un extra (cantidad en la unidad base del ingrediente).
+/// Consumo de inventario de un extra (cantidad en la unidad canónica del ingrediente).
 model ProductExtraIngredient {
   id             String   @id @default(cuid())
   productExtraId String
@@ -524,7 +527,7 @@ model RecipeIngredient {
   id            String   @id @default(cuid())
   recipeId      String
   ingredientId  String
-  quantity      Decimal  @db.Decimal(12, 4) // Cantidad en la unidad base del ingrediente
+  quantity      Decimal  @db.Decimal(12, 4) // Cantidad en la unidad canónica del ingrediente
 
   recipe        Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
   ingredient    Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
@@ -538,7 +541,12 @@ model InventoryMovement {
   id              String   @id @default(cuid())
   organizationId  String
   branchId        String?
-  ingredientId    String
+  /// `null` si el producto se eliminó; el kardex se conserva.
+  ingredientId    String?
+  /// Nombre del producto en el momento del movimiento (snapshot).
+  ingredientName  String
+  /// Unidad visible del producto en el momento del movimiento.
+  displayUnit     UnitCode
   userId          String?
   type            InventoryMovementType
   quantity        Decimal  @db.Decimal(12, 4) // Positivo = entrada, Negativo = salida
@@ -551,7 +559,8 @@ model InventoryMovement {
 
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branch          Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  ingredient      Ingredient   @relation(fields: [ingredientId], references: [id])
+  // `SetNull`: el kardex se conserva aunque se elimine el producto.
+  ingredient      Ingredient?  @relation(fields: [ingredientId], references: [id], onDelete: SetNull)
   // `SetNull`: el kardex se conserva aunque se elimine la cuenta del autor.
   user            User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
