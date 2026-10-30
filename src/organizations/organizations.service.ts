@@ -33,8 +33,9 @@ export class OrganizationsService {
       name: organization.name,
       slug: organization.slug,
       domain: organization.domain,
-      taxRate: organization.taxRate.toString(),
+      taxRate: organization.taxRate?.toString() ?? '0.16',
       isActive: organization.isActive,
+      useCoreSuggestions: organization.useCoreSuggestions ?? true,
     };
   }
 
@@ -66,6 +67,7 @@ export class OrganizationsService {
       serviceTypes?: string[];
       goals?: string[];
       hasBranches?: boolean;
+      useCoreSuggestions?: boolean;
     } = {};
 
     if (dto.name !== undefined) {
@@ -116,6 +118,10 @@ export class OrganizationsService {
       data.hasBranches = dto.hasBranches;
     }
 
+    if (dto.useCoreSuggestions !== undefined) {
+      data.useCoreSuggestions = dto.useCoreSuggestions;
+    }
+
     if (!organizationId) {
       throw new NotFoundException('Organización no encontrada');
     }
@@ -129,12 +135,13 @@ export class OrganizationsService {
       name: organization.name,
       slug: organization.slug,
       domain: organization.domain,
-      taxRate: organization.taxRate.toString(),
+      taxRate: organization.taxRate?.toString() ?? '0.16',
       isActive: organization.isActive,
       businessType: organization.businessType,
       serviceTypes: organization.serviceTypes,
       goals: organization.goals,
       hasBranches: organization.hasBranches,
+      useCoreSuggestions: organization.useCoreSuggestions ?? true,
     };
   }
 }

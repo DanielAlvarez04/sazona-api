@@ -27,7 +27,8 @@ import {
   CreateIngredientDto,
   CreateIngredientsBulkDto,
   DeleteIngredientsDto,
-  SyncCoreProductsDto,
+  SyncCoreItemsDto,
+  UpdateCoreIngredientCategoriesDto,
   UpdateIngredientDto,
 } from './dto/inventory.dto';
 
@@ -128,15 +129,16 @@ export class InventoryController {
   @RequirePermissions('inventory:manage')
   @HttpCode(HttpStatus.OK)
   @Post('ingredients/sync-core')
-  syncCoreProducts(
+  syncCoreItems(
     @CurrentUser() user: JwtUser,
-    @Body() dto: SyncCoreProductsDto,
+    @Body() dto: SyncCoreItemsDto,
   ) {
-    return this.inventory.syncCoreProducts(
+    return this.inventory.syncCoreItems(
       user.organizationId,
       user.sub,
-      dto.products,
+      dto.items,
       dto.removeNames,
+      dto.removeItems ?? [],
     );
   }
 
@@ -249,8 +251,23 @@ export class InventoryController {
 
   @ApiOperation({ summary: 'Listar categorías de ingredientes (core + personalizadas)' })
   @Get('ingredient-categories')
-  listIngredientCategories(@CurrentUser() user: JwtUser) {
-    return this.inventory.listIngredientCategories(user.organizationId);
+  listIngredientCategories(
+    @CurrentUser() user: JwtUser,
+    @Query('includeInactive') includeInactive?: string,
+  ) {
+    return this.inventory.listIngredientCategories(
+      user.organizationId,
+      includeInactive === 'true',
+    );
+  }
+
+  @ApiOperation({ summary: 'Activar o desactivar todas las categorías core de inventario' })
+  @RequirePermissions('inventory:manage')
+  @Patch('ingredient-categories/bulk/core-status')
+  setCoreIngredientCategoriesStatus(
+    @Body() dto: UpdateCoreIngredientCategoriesDto,
+  ) {
+    return this.inventory.setCoreIngredientCategoriesActive(dto.isActive);
   }
 
   @ApiOperation({ summary: 'Listar ubicaciones de ingredientes (core + personalizadas)' })

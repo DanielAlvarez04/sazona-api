@@ -1,8 +1,10 @@
 ﻿import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { CategoryKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 
@@ -10,20 +12,40 @@ import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 export class CategoriesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list(organizationId: string | null, includeInactive = false) {
-    return this.prisma.category.findMany({
+  async list(
+    organizationId: string | null,
+    includeInactive = false,
+    kind: CategoryKind = CategoryKind.ARTICLE,
+  ) {
+    const categories = await this.prisma.category.findMany({
       where: {
-        organizationId,
+        kind,
+        // Categorías propias + core globales.
+        OR: [{ organizationId }, { organizationId: null, isCore: true }],
         ...(includeInactive ? {} : { isActive: true }),
       },
-      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      include: { _count: { select: { products: true } } },
+      include:
+        kind === CategoryKind.RECIPE
+          ? { _count: { select: { recipes: true } } }
+          : { _count: { select: { items: true } } },
+    });
+
+    // Alfabético (es) y las opciones "Otra/Otro…" al final.
+    return categories.sort((a, b) => {
+      const aOther = isOtherCategory(a);
+      const bOther = isOtherCategory(b);
+
+      if (aOther !== bOther) return aOther ? 1 : -1;
+
+      return a.name.localeCompare(b.name, 'es', { sensitivity: 'base' });
     });
   }
 
   async create(organizationId: string | null, dto: CreateCategoryDto) {
     const name = dto.name.trim();
-    await this.assertNameAvailable(organizationId, name);
+    const kind = dto.kind ?? CategoryKind.ARTICLE;
+
+    await this.assertNameAvailable(organizationId, kind, name);
 
     return this.prisma.category.create({
       data: {
@@ -31,6 +53,8 @@ export class CategoriesService {
         name,
         description: normalizeOptional(dto.description),
         sortOrder: dto.sortOrder ?? 0,
+        kind,
+        isCore: false,
       },
     });
   }
@@ -38,10 +62,21 @@ export class CategoriesService {
   async update(organizationId: string | null, id: string, dto: UpdateCategoryDto) {
     const category = await this.find(organizationId, id);
 
+    if (category.isCore) {
+      throw new BadRequestException(
+        'Las categorías core no se pueden editar',
+      );
+    }
+
     if (dto.name !== undefined) {
       const name = dto.name.trim();
       if (name !== category.name) {
-        await this.assertNameAvailable(organizationId, name, id);
+        await this.assertNameAvailable(
+          organizationId,
+          category.kind,
+          name,
+          id,
+        );
       }
     }
 
@@ -62,14 +97,32 @@ export class CategoriesService {
   async deactivate(organizationId: string | null, id: string) {
     const category = await this.find(organizationId, id);
 
-    const activeProducts = await this.prisma.product.count({
-      where: { categoryId: category.id, isActive: true },
-    });
-
-    if (activeProducts > 0) {
-      throw new ConflictException(
-        `La categoría tiene ${activeProducts} artículo(s) activo(s). Desactívalos o muévelos antes de desactivarla`,
+    if (category.isCore) {
+      throw new BadRequestException(
+        'Las categorías core no se pueden desactivar',
       );
+    }
+
+    if (category.kind === CategoryKind.RECIPE) {
+      const activeRecipes = await this.prisma.recipe.count({
+        where: { categoryId: category.id, isActive: true },
+      });
+
+      if (activeRecipes > 0) {
+        throw new ConflictException(
+          `La categoría tiene ${activeRecipes} receta(s) activa(s). Desactívalas o muévelas antes de desactivarla`,
+        );
+      }
+    } else {
+      const activeItems = await this.prisma.item.count({
+        where: { categoryId: category.id, isActive: true },
+      });
+
+      if (activeItems > 0) {
+        throw new ConflictException(
+          `La categoría tiene ${activeItems} artículo(s) activo(s). Desactívalos o muévelos antes de desactivarla`,
+        );
+      }
     }
 
     return this.prisma.category.update({
@@ -78,9 +131,54 @@ export class CategoriesService {
     });
   }
 
+  /**
+   * Activa o desactiva todas las categorías core de un tipo.
+   *
+   * Al desactivar se limpia la categoría de todos los artículos (o recetas)
+   * que usen alguna categoría core de ese tipo.
+   */
+  async setCoreGroupActive(kind: CategoryKind, isActive: boolean) {
+    const categories = await this.prisma.category.findMany({
+      where: { organizationId: null, isCore: true, kind },
+      select: { id: true },
+    });
+
+    if (categories.length === 0) {
+      return { ok: true, updated: 0 };
+    }
+
+    const ids = categories.map((category) => category.id);
+
+    return this.prisma.$transaction(async (tx) => {
+      if (!isActive) {
+        if (kind === CategoryKind.RECIPE) {
+          await tx.recipe.updateMany({
+            where: { categoryId: { in: ids } },
+            data: { categoryId: null },
+          });
+        } else {
+          await tx.item.updateMany({
+            where: { categoryId: { in: ids } },
+            data: { categoryId: null },
+          });
+        }
+      }
+
+      const result = await tx.category.updateMany({
+        where: { id: { in: ids } },
+        data: { isActive },
+      });
+
+      return { ok: true, updated: result.count };
+    });
+  }
+
   private async find(organizationId: string | null, id: string) {
     const category = await this.prisma.category.findFirst({
-      where: { id, organizationId },
+      where: {
+        id,
+        OR: [{ organizationId }, { organizationId: null, isCore: true }],
+      },
     });
 
     if (!category) {
@@ -92,12 +190,14 @@ export class CategoriesService {
 
   private async assertNameAvailable(
     organizationId: string | null,
+    kind: CategoryKind,
     name: string,
     excludeId?: string,
   ) {
     const existing = await this.prisma.category.findFirst({
       where: {
         organizationId,
+        kind,
         name: { equals: name, mode: 'insensitive' },
         ...(excludeId ? { id: { not: excludeId } } : {}),
       },
@@ -107,6 +207,24 @@ export class CategoriesService {
     if (existing) {
       throw new ConflictException('Ya existe una categoría con ese nombre');
     }
+
+    if (organizationId) {
+      const core = await this.prisma.category.findFirst({
+        where: {
+          organizationId: null,
+          isCore: true,
+          kind,
+          name: { equals: name, mode: 'insensitive' },
+        },
+        select: { id: true },
+      });
+
+      if (core) {
+        throw new ConflictException(
+          'Ya existe una categoría core con ese nombre',
+        );
+      }
+    }
   }
 }
 
@@ -115,3 +233,11 @@ function normalizeOptional(value: string | undefined | null) {
   return trimmed ? trimmed : null;
 }
 
+/** Categorías tipo "Otra/Otras/Otro/Otros…" que van al final del listado. */
+const OTHER_CATEGORY_PATTERN = /^otr[oa]s?\b/i;
+
+function isOtherCategory(category: { code: string | null; name: string }) {
+  return (
+    category.code === 'other' || OTHER_CATEGORY_PATTERN.test(category.name)
+  );
+}

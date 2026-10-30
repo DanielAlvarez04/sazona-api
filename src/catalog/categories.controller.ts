@@ -12,13 +12,18 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CategoryKind } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtUser } from '../auth/auth.service';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CategoriesService } from './categories.service';
-import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
+import {
+  CreateCategoryDto,
+  UpdateCategoryDto,
+  UpdateCoreCategoryGroupDto,
+} from './dto/category.dto';
 
 @ApiTags('catalog')
 @Controller('catalog/categories')
@@ -26,13 +31,23 @@ import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 export class CategoriesController {
   constructor(private readonly categories: CategoriesService) {}
 
-  @ApiOperation({ summary: 'Listar categorías' })
+  @ApiOperation({ summary: 'Listar categorías de artículos o recetas' })
   @Get()
   list(
     @CurrentUser() user: JwtUser,
     @Query('includeInactive') includeInactive?: string,
+    @Query('kind') kind?: string,
   ) {
-    return this.categories.list(user.organizationId, includeInactive === 'true');
+    const normalized =
+      kind?.toLowerCase() === 'recipe'
+        ? CategoryKind.RECIPE
+        : CategoryKind.ARTICLE;
+
+    return this.categories.list(
+      user.organizationId,
+      includeInactive === 'true',
+      normalized,
+    );
   }
 
   @ApiOperation({ summary: 'Crear categoría' })
@@ -51,6 +66,13 @@ export class CategoriesController {
     @Body() dto: UpdateCategoryDto,
   ) {
     return this.categories.update(user.organizationId, id, dto);
+  }
+
+  @ApiOperation({ summary: 'Activar o desactivar todas las categorías core de un tipo' })
+  @RequirePermissions('catalog:manage')
+  @Patch('bulk/core-status')
+  setCoreGroupStatus(@Body() dto: UpdateCoreCategoryGroupDto) {
+    return this.categories.setCoreGroupActive(dto.kind, dto.isActive);
   }
 
   @ApiOperation({ summary: 'Desactivar categoría' })

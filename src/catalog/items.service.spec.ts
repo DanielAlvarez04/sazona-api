@@ -5,27 +5,27 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { IngredientQuantitiesService } from './ingredient-quantities.service';
-import { ProductsService } from './products.service';
+import { ItemsService } from './items.service';
 
 function build() {
   const prisma = {
-    product: {
+    item: {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
     },
-    productVariant: {
+    itemVariant: {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
     },
-    productExtra: {
+    itemExtra: {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
     },
-    productExtraIngredient: { deleteMany: jest.fn() },
-    productIngredientExclusion: {
+    itemExtraIngredient: { deleteMany: jest.fn() },
+    itemIngredientExclusion: {
       deleteMany: jest.fn(),
       createMany: jest.fn(),
     },
@@ -43,7 +43,7 @@ function build() {
     resolve: jest.fn().mockResolvedValue([]),
   } as unknown as IngredientQuantitiesService;
 
-  const service = new ProductsService(
+  const service = new ItemsService(
     prisma as unknown as PrismaService,
     quantities,
   );
@@ -51,48 +51,48 @@ function build() {
   return { service, prisma };
 }
 
-describe('ProductsService — validaciones de alta', () => {
-  it('rechaza componentes de combo en un producto normal', async () => {
+describe('ItemsService — validaciones de alta', () => {
+  it('rechaza componentes de combo en un artículo normal', async () => {
     const { service, prisma } = build();
 
     await expect(
       service.create('o1', {
         name: 'Producto',
         price: 10,
-        comboComponents: [{ productId: 'p2', quantity: 1 }],
+        comboComponents: [{ itemId: 'p2', quantity: 1 }],
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
 
-    expect(prisma.product.create).not.toHaveBeenCalled();
+    expect(prisma.item.create).not.toHaveBeenCalled();
   });
 
-  it('exige al menos un componente cuando el producto es combo', async () => {
+  it('exige al menos un componente cuando el artículo es combo', async () => {
     const { service, prisma } = build();
 
     await expect(
       service.create('o1', { name: 'Combo', price: 10, isCombo: true }),
     ).rejects.toBeInstanceOf(BadRequestException);
 
-    expect(prisma.product.create).not.toHaveBeenCalled();
+    expect(prisma.item.create).not.toHaveBeenCalled();
   });
 
   it('normaliza el SKU a mayúsculas', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst
+    prisma.item.findFirst
       .mockResolvedValueOnce(null) // SKU libre
       .mockResolvedValueOnce({ id: 'p1', sku: 'CAF-01' }); // detalle posterior
-    prisma.product.create.mockResolvedValue({ id: 'p1' });
+    prisma.item.create.mockResolvedValue({ id: 'p1' });
 
     await service.create('o1', { name: 'Latte', sku: 'caf-01', price: 55 });
 
-    const data = prisma.product.create.mock.calls[0][0].data;
+    const data = prisma.item.create.mock.calls[0][0].data;
     expect(data.sku).toBe('CAF-01');
     expect(data.price.toString()).toBe('55');
   });
 
   it('rechaza SKU duplicado sin distinguir mayúsculas', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst.mockResolvedValueOnce({ id: 'otro' });
+    prisma.item.findFirst.mockResolvedValueOnce({ id: 'otro' });
 
     await expect(
       service.create('o1', { name: 'Latte', sku: 'CAF-01', price: 55 }),
@@ -121,10 +121,10 @@ describe('ProductsService — validaciones de alta', () => {
   });
 });
 
-describe('ProductsService — combos', () => {
+describe('ItemsService — combos', () => {
   it('rechaza dejar un combo sin componentes', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst.mockResolvedValueOnce({
+    prisma.item.findFirst.mockResolvedValueOnce({
       id: 'c1',
       organizationId: 'o1',
       isCombo: true,
@@ -139,7 +139,7 @@ describe('ProductsService — combos', () => {
 
   it('rechaza un combo dentro de otro combo', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst
+    prisma.item.findFirst
       .mockResolvedValueOnce({ id: 'c1', organizationId: 'o1', isCombo: true })
       .mockResolvedValueOnce({
         id: 'c2',
@@ -151,14 +151,14 @@ describe('ProductsService — combos', () => {
 
     await expect(
       service.replaceComboComponents('o1', 'c1', [
-        { productId: 'c2', quantity: 1 },
+        { itemId: 'c2', quantity: 1 },
       ]),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rechaza que un combo se contenga a sí mismo', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst.mockResolvedValueOnce({
+    prisma.item.findFirst.mockResolvedValueOnce({
       id: 'c1',
       organizationId: 'o1',
       isCombo: true,
@@ -166,14 +166,14 @@ describe('ProductsService — combos', () => {
 
     await expect(
       service.replaceComboComponents('o1', 'c1', [
-        { productId: 'c1', quantity: 1 },
+        { itemId: 'c1', quantity: 1 },
       ]),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rechaza componentes desactivados', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst
+    prisma.item.findFirst
       .mockResolvedValueOnce({ id: 'c1', organizationId: 'o1', isCombo: true })
       .mockResolvedValueOnce({
         id: 'p2',
@@ -185,14 +185,14 @@ describe('ProductsService — combos', () => {
 
     await expect(
       service.replaceComboComponents('o1', 'c1', [
-        { productId: 'p2', quantity: 1 },
+        { itemId: 'p2', quantity: 1 },
       ]),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('no permite configurar componentes en un producto que no es combo', async () => {
+  it('no permite configurar componentes en un artículo que no es combo', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst.mockResolvedValueOnce({
+    prisma.item.findFirst.mockResolvedValueOnce({
       id: 'p1',
       organizationId: 'o1',
       isCombo: false,
@@ -200,14 +200,14 @@ describe('ProductsService — combos', () => {
 
     await expect(
       service.replaceComboComponents('o1', 'p1', [
-        { productId: 'p2', quantity: 1 },
+        { itemId: 'p2', quantity: 1 },
       ]),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('no desactiva un producto que es componente de un combo activo', async () => {
+  it('no desactiva un artículo que es componente de un combo activo', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst.mockResolvedValueOnce({
+    prisma.item.findFirst.mockResolvedValueOnce({
       id: 'p1',
       organizationId: 'o1',
     });
@@ -217,14 +217,14 @@ describe('ProductsService — combos', () => {
       ConflictException,
     );
 
-    expect(prisma.product.update).not.toHaveBeenCalled();
+    expect(prisma.item.update).not.toHaveBeenCalled();
   });
 });
 
-describe('ProductsService — exclusiones y variantes', () => {
+describe('ItemsService — exclusiones y variantes', () => {
   it('rechaza ingredientes repetidos en las exclusiones', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst.mockResolvedValueOnce({
+    prisma.item.findFirst.mockResolvedValueOnce({
       id: 'p1',
       organizationId: 'o1',
     });
@@ -240,18 +240,18 @@ describe('ProductsService — exclusiones y variantes', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('rechaza variantes con el mismo nombre en el producto', async () => {
+  it('rechaza variantes con el mismo nombre en el artículo', async () => {
     const { service, prisma } = build();
-    prisma.product.findFirst.mockResolvedValueOnce({
+    prisma.item.findFirst.mockResolvedValueOnce({
       id: 'p1',
       organizationId: 'o1',
     });
-    prisma.productVariant.findFirst.mockResolvedValue({ id: 'v1' });
+    prisma.itemVariant.findFirst.mockResolvedValue({ id: 'v1' });
 
     await expect(
       service.createVariant('o1', 'p1', { name: 'Grande' }),
     ).rejects.toBeInstanceOf(ConflictException);
 
-    expect(prisma.productVariant.create).not.toHaveBeenCalled();
+    expect(prisma.itemVariant.create).not.toHaveBeenCalled();
   });
 });

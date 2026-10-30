@@ -32,7 +32,7 @@ export class RoundItemExtraDto {
 export class RoundItemDto {
   @IsString()
   @MaxLength(40)
-  productId!: string;
+  itemId!: string;
 
   @IsOptional()
   @IsString()

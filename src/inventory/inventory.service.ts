@@ -11,6 +11,8 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { QuantityConverter } from '../common/quantity-converter.service';
+import { categoryInitials } from '../common/sku';
+import { CORE_CATEGORIES } from '../catalog/core-categories';
 import {
   canonicalFactor,
   canonicalUnit,
@@ -761,16 +763,22 @@ export class InventoryService {
    * - Retira los desmarcados que existan. Si están en recetas, esas recetas
    *   quedan inactivas. Si aparecen en pedidos, se conservan.
    */
-  async syncCoreProducts(
+  async syncCoreItems(
     organizationId: string | null,
     userId: string,
-    products: Array<{
+    items: Array<{
       name: string;
       displayUnit: UnitCode;
       category: string;
       location: string;
     }>,
     removeNames: string[],
+    removeItems: Array<{
+      name: string;
+      displayUnit: UnitCode;
+      category: string;
+      location: string;
+    }> = [],
   ) {
     const [categories, locations, ingredients] = await Promise.all([
       this.prisma.ingredientCategory.findMany({
@@ -789,7 +797,18 @@ export class InventoryService {
       }),
       this.prisma.ingredient.findMany({
         where: { ...(organizationId ? { organizationId } : {}) },
-        select: { id: true, name: true },
+        select: {
+          id: true,
+          name: true,
+          isActive: true,
+          displayUnit: true,
+          currentStock: true,
+          minStock: true,
+          maxStock: true,
+          unitCost: true,
+          category: { select: { name: true } },
+          location: { select: { name: true } },
+        },
       }),
     ]);
 
@@ -799,10 +818,10 @@ export class InventoryService {
     const locationIds = new Map(
       locations.map((location) => [location.name.trim().toLowerCase(), location.id]),
     );
-    const existingIds = new Map(
+    const existingByKey = new Map(
       ingredients.map((ingredient) => [
         ingredient.name.trim().toLowerCase(),
-        ingredient.id,
+        ingredient,
       ]),
     );
 
@@ -811,14 +830,27 @@ export class InventoryService {
     const skipped: Array<{ name: string; reason: string }> = [];
     const seen = new Set<string>();
 
-    for (const item of products) {
+    for (const item of items) {
       const name = item.name.trim();
       const key = name.toLowerCase();
 
       if (seen.has(key)) continue;
       seen.add(key);
 
-      if (existingIds.has(key)) continue;
+      const existing = existingByKey.get(key);
+
+      if (existing) {
+        // Un insumo core desactivado desde Configuración se reactiva al
+        // volver a marcarlo.
+        if (!existing.isActive) {
+          await this.prisma.ingredient.update({
+            where: { id: existing.id },
+            data: { isActive: true },
+          });
+          existing.isActive = true;
+        }
+        continue;
+      }
 
       const categoryId = categoryIds.get(item.category.trim().toLowerCase());
       if (!categoryId) {
@@ -847,7 +879,6 @@ export class InventoryService {
           null,
         );
 
-        existingIds.set(key, ingredient.id);
         created.push(name);
       } catch (error) {
         skipped.push({
@@ -858,47 +889,108 @@ export class InventoryService {
       }
     }
 
-    for (const rawName of removeNames) {
-      const name = rawName.trim();
+    const hasCustomValues = (ingredient: (typeof ingredients)[number]) =>
+      (ingredient.unitCost !== null && !ingredient.unitCost.isZero()) ||
+      !ingredient.currentStock.isZero() ||
+      !ingredient.minStock.isZero() ||
+      (ingredient.maxStock !== null && !ingredient.maxStock.isZero());
+
+    const matchesPreset = (
+      ingredient: (typeof ingredients)[number],
+      preset: { displayUnit: UnitCode; category: string; location: string },
+    ) =>
+      ingredient.displayUnit === preset.displayUnit &&
+      // Una categoría nula puede venir de desactivar todas las categorías:
+      // no cuenta como modificación manual.
+      (ingredient.category === null ||
+        ingredient.category.name === preset.category) &&
+      (ingredient.location?.name ?? '') === preset.location;
+
+    type Removal = {
+      name: string;
+      displayUnit?: UnitCode;
+      category?: string;
+      location?: string;
+    };
+
+    const removals: Removal[] =
+      removeItems.length > 0
+        ? removeItems
+        : removeNames.map((name) => ({ name }));
+
+    for (const item of removals) {
+      const name = item.name.trim();
       const key = name.toLowerCase();
-      const id = existingIds.get(key);
+      const ingredient = existingByKey.get(key);
 
-      if (!id) continue;
+      // Solo se desactivan insumos core que sigan activos y sin cambios.
+      if (!ingredient || !ingredient.isActive) continue;
 
-      const inOrders = await this.prisma.orderItemExclusion.count({
-        where: { ingredientId: id },
-      });
-
-      if (inOrders > 0) {
-        skipped.push({ name, reason: 'aparece en pedidos' });
+      if (hasCustomValues(ingredient)) {
+        skipped.push({ name, reason: 'tiene stock o costo modificado' });
         continue;
       }
 
-      // Es un producto del catálogo core: las recetas que lo usan quedan
-      // inactivas en lugar de bloquear el retiro.
-      const recipeRows = await this.prisma.recipeIngredient.findMany({
-        where: { ingredientId: id },
-        select: { recipeId: true },
-      });
-      const recipeIds = [...new Set(recipeRows.map((row) => row.recipeId))];
-
-      if (recipeIds.length > 0) {
-        await this.prisma.recipe.updateMany({
-          where: { id: { in: recipeIds } },
-          data: { isActive: false },
+      if (
+        item.displayUnit &&
+        !matchesPreset(ingredient, {
+          displayUnit: item.displayUnit,
+          category: item.category ?? '',
+          location: item.location ?? '',
+        })
+      ) {
+        skipped.push({
+          name,
+          reason: 'tiene unidad, categoría o ubicación modificada',
         });
+        continue;
       }
 
-      await this.prisma.$transaction(async (tx) => {
-        // La FK es `SetNull`: los movimientos sobreviven con su snapshot.
-        await tx.ingredient.delete({ where: { id } });
+      await this.prisma.ingredient.update({
+        where: { id: ingredient.id },
+        data: { isActive: false },
       });
 
-      existingIds.delete(key);
+      ingredient.isActive = false;
       removed.push(name);
     }
 
     return { created, removed, skipped };
+  }
+
+  /**
+   * Activa o desactiva todas las categorías core de inventario.
+   *
+   * Al desactivarlas se limpia la categoría de los insumos que las usaban para
+   * que no queden apuntando a una categoría oculta.
+   */
+  async setCoreIngredientCategoriesActive(isActive: boolean) {
+    const categories = await this.prisma.ingredientCategory.findMany({
+      where: { organizationId: null, isCore: true },
+      select: { id: true },
+    });
+
+    if (categories.length === 0) {
+      return { ok: true, updated: 0 };
+    }
+
+    const ids = categories.map((category) => category.id);
+
+    return this.prisma.$transaction(async (tx) => {
+      if (!isActive) {
+        await tx.ingredient.updateMany({
+          where: { categoryId: { in: ids } },
+          data: { categoryId: null },
+        });
+      }
+
+      const result = await tx.ingredientCategory.updateMany({
+        where: { id: { in: ids } },
+        data: { isActive },
+      });
+
+      return { ok: true, updated: result.count };
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -1198,9 +1290,22 @@ export class InventoryService {
           data: { ...cat, isCore: true, isActive: true },
         });
       } else {
-        await this.prisma.ingredientCategory.create({
-          data: { organizationId: null, ...cat, isCore: true, isActive: true },
-        });
+        try {
+          await this.prisma.ingredientCategory.create({
+            data: { organizationId: null, ...cat, isCore: true, isActive: true },
+          });
+        } catch (e) {
+          // Otra petición simultánea pudo crearla: el índice parcial global
+          // impide duplicados y aquí se ignora la carrera.
+          if (
+            !(
+              e instanceof Prisma.PrismaClientKnownRequestError &&
+              e.code === 'P2002'
+            )
+          ) {
+            throw e;
+          }
+        }
       }
     }
 
@@ -1218,11 +1323,53 @@ export class InventoryService {
         }
       }
     }
+
+    // Categorías core de artículos y recetas (globales y no editables).
+    for (const category of CORE_CATEGORIES) {
+      const existing = await this.prisma.category.findUnique({
+        where: {
+          kind_code: { kind: category.kind, code: category.code },
+        },
+        select: { id: true },
+      });
+
+      if (existing) {
+        await this.prisma.category.update({
+          where: { id: existing.id },
+          data: {
+            organizationId: null,
+            name: category.name,
+            description: category.description,
+            kind: category.kind,
+            sortOrder: category.sortOrder,
+            isCore: true,
+            isActive: true,
+          },
+        });
+      } else {
+        await this.prisma.category.create({
+          data: {
+            organizationId: null,
+            code: category.code,
+            name: category.name,
+            description: category.description,
+            kind: category.kind,
+            sortOrder: category.sortOrder,
+            isCore: true,
+            isActive: true,
+          },
+        });
+      }
+    }
   }
 
-  async listIngredientCategories(organizationId: string | null) {
+  async listIngredientCategories(
+    organizationId: string | null,
+    includeInactive = false,
+  ) {
     return this.prisma.ingredientCategory.findMany({
-      where: { isActive: true,
+      where: {
+        ...(includeInactive ? {} : { isActive: true }),
         OR: [
           { organizationId },
           { organizationId: null },
@@ -1421,58 +1568,7 @@ export class InventoryService {
    * Ej.: "Frutas y verduras" → FVE · "Artículos de operación" → AOP
    */
   private categoryPrefix(name: string): string {
-    const stopWords = new Set([
-      'y',
-      'e',
-      'o',
-      'de',
-      'del',
-      'para',
-      'con',
-      'la',
-      'el',
-      'los',
-      'las',
-      'en',
-      'al',
-    ]);
-
-    const plain = name
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-zA-Z0-9\s]/g, ' ')
-      .trim();
-
-    const words = plain
-      .split(/\s+/)
-      .filter((word) => word.length > 0 && !stopWords.has(word.toLowerCase()));
-
-    let prefix = words
-      .slice(0, 3)
-      .map((word) => word[0])
-      .join('')
-      .toUpperCase();
-
-    // Menos de tres palabras: se toman más letras de la última.
-    if (prefix.length < 3) {
-      const lastWord = (words[words.length - 1] ?? '').toUpperCase();
-      let index = 1;
-
-      while (prefix.length < 3 && index < lastWord.length) {
-        prefix += lastWord[index];
-        index += 1;
-      }
-    }
-
-    // Último recurso (nombres muy cortos o símbolos).
-    if (prefix.length < 3) {
-      for (const char of plain.replace(/\s/g, '').toUpperCase()) {
-        if (prefix.length >= 3) break;
-        prefix += char;
-      }
-    }
-
-    return prefix.slice(0, 3).padEnd(3, 'X');
+    return categoryInitials(name, 3);
   }
 
   /**

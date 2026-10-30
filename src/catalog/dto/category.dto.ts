@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
@@ -7,6 +8,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { CategoryKind } from '@prisma/client';
 
 export class CreateCategoryDto {
   @IsString()
@@ -23,6 +25,11 @@ export class CreateCategoryDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  /** Las categorías de artículos son el valor por defecto. */
+  @IsOptional()
+  @IsEnum(CategoryKind)
+  kind?: CategoryKind;
 }
 
 export class UpdateCategoryDto {
@@ -45,4 +52,13 @@ export class UpdateCategoryDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+}
+
+/** Activar/desactivar todas las categorías core de un tipo. */
+export class UpdateCoreCategoryGroupDto {
+  @IsEnum(CategoryKind)
+  kind!: CategoryKind;
+
+  @IsBoolean()
+  isActive!: boolean;
 }

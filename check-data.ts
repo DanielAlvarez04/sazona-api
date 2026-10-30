@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client'
+﻿import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL })
@@ -29,13 +29,13 @@ async function main() {
   
   console.log('Organization:', membership.organizationId)
   
-  // Check existing products
-  const products = await prisma.product.findMany({
+  // Check existing items
+  const items = await prisma.item.findMany({
     where: { organizationId: membership.organizationId }
   })
   
-  console.log('Existing products:', products.length)
-  products.forEach(p => console.log(`- ${p.name} (${p.price})`))
+  console.log('Existing items:', items.length)
+  items.forEach(p => console.log(`- ${p.name} (${p.price})`))
   
   // Check categories
   const categories = await prisma.category.findMany({

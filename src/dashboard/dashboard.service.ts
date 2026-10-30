@@ -57,7 +57,7 @@ export class DashboardService {
       activeRounds,
       ingredients,
       recentOrders,
-      topProducts,
+      topItems,
       itemsToday,
       preparedRounds,
     ] = await Promise.all([
@@ -129,7 +129,7 @@ export class DashboardService {
         },
       }),
       this.prisma.orderItem.groupBy({
-        by: ['productName'],
+        by: ['itemName'],
         where: {
           orderRound: {
             status: { not: OrderRoundStatus.CANCELLED },
@@ -260,8 +260,8 @@ export class DashboardService {
         sales: money ? round(value.sales) : null,
         payments: value.payments,
       })),
-      topProducts: topProducts.map((row) => ({
-        name: row.productName,
+      topItems: topItems.map((row) => ({
+        name: row.itemName,
         quantity: row._sum.quantity ?? 0,
         revenue: money ? round(Number(row._sum.subtotal ?? 0)) : null,
       })),
@@ -320,7 +320,7 @@ export class DashboardService {
   ) {
     const scope = branchId ? { branchId } : {};
 
-    const [payments, topProducts, orders] = await Promise.all([
+    const [payments, topItems, orders] = await Promise.all([
       this.prisma.payment.findMany({
         where: {
           organizationId,
@@ -336,7 +336,7 @@ export class DashboardService {
         },
       }),
       this.prisma.orderItem.groupBy({
-        by: ['productName'],
+        by: ['itemName'],
         where: {
           orderRound: {
             status: { not: OrderRoundStatus.CANCELLED },
@@ -414,8 +414,8 @@ export class DashboardService {
           count: value.count,
         }))
         .sort((a, b) => b.total - a.total),
-      topProducts: topProducts.map((row) => ({
-        name: row.productName,
+      topItems: topItems.map((row) => ({
+        name: row.itemName,
         quantity: row._sum.quantity ?? 0,
         revenue: round(Number(row._sum.subtotal ?? 0)),
       })),

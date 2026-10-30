@@ -47,4 +47,9 @@ export class UpdateOrganizationDto {
   @IsOptional()
   @IsBoolean()
   hasBranches?: boolean;
+
+  /** Activa/desactiva la sección de insumos core sugeridos. */
+  @IsOptional()
+  @IsBoolean()
+  useCoreSuggestions?: boolean;
 }

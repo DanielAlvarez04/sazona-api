@@ -18,26 +18,26 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtUser } from '../auth/auth.service';
 import { RequirePermissions } from '../common/decorators/require-permissions.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
-import { ProductsService } from './products.service';
+import { ItemsService } from './items.service';
 import { CatalogImportService } from './catalog-import.service';
 import {
   CreateExtraDto,
-  CreateProductDto,
+  CreateItemDto,
   CreateVariantDto,
   ReplaceComboComponentsDto,
   ReplaceExclusionsDto,
   UpdateExtraDto,
-  UpdateProductDto,
+  UpdateItemDto,
   UpdateVariantDto,
-} from './dto/product.dto';
-import { ImportProductsDto } from './dto/import.dto';
+} from './dto/item.dto';
+import { ImportItemsDto } from './dto/import.dto';
 
 @ApiTags('catalog')
-@Controller('catalog/products')
+@Controller('catalog/items')
 @UseGuards(JwtAuthGuard, RolesGuard)
-export class ProductsController {
+export class ItemsController {
   constructor(
-    private readonly products: ProductsService,
+    private readonly items: ItemsService,
     private readonly importer: CatalogImportService,
   ) {}
 
@@ -50,7 +50,7 @@ export class ProductsController {
     @Query('includeInactive') includeInactive?: string,
     @Query('onlyCombos') onlyCombos?: string,
   ) {
-    return this.products.list(user.organizationId, {
+    return this.items.list(user.organizationId, {
       search,
       categoryId,
       includeInactive: includeInactive === 'true',
@@ -61,14 +61,14 @@ export class ProductsController {
   @ApiOperation({ summary: 'Detalle de un artículo' })
   @Get(':id')
   findOne(@CurrentUser() user: JwtUser, @Param('id') id: string) {
-    return this.products.findOne(user.organizationId, id);
+    return this.items.findOne(user.organizationId, id);
   }
 
   @ApiOperation({ summary: 'Crear artículo con variantes, extras y combo' })
   @RequirePermissions('catalog:manage')
   @Post()
-  create(@CurrentUser() user: JwtUser, @Body() dto: CreateProductDto) {
-    return this.products.create(user.organizationId, dto);
+  create(@CurrentUser() user: JwtUser, @Body() dto: CreateItemDto) {
+    return this.items.create(user.organizationId, dto);
   }
 
   @ApiOperation({ summary: 'Importar artículos desde CSV' })
@@ -77,9 +77,9 @@ export class ProductsController {
   @Post('import')
   import(
     @CurrentUser() user: JwtUser,
-    @Body() dto: ImportProductsDto,
+    @Body() dto: ImportItemsDto,
   ) {
-    return this.importer.importProducts(
+    return this.importer.importItems(
       user.organizationId,
       dto.csv,
       dto.dryRun ?? false,
@@ -92,9 +92,9 @@ export class ProductsController {
   update(
     @CurrentUser() user: JwtUser,
     @Param('id') id: string,
-    @Body() dto: UpdateProductDto,
+    @Body() dto: UpdateItemDto,
   ) {
-    return this.products.update(user.organizationId, id, dto);
+    return this.items.update(user.organizationId, id, dto);
   }
 
   @ApiOperation({ summary: 'Desactivar artículo' })
@@ -102,7 +102,7 @@ export class ProductsController {
   @HttpCode(HttpStatus.OK)
   @Delete(':id')
   deactivate(@CurrentUser() user: JwtUser, @Param('id') id: string) {
-    return this.products.deactivate(user.organizationId, id);
+    return this.items.deactivate(user.organizationId, id);
   }
 
   // --------------------------------------------------------------------------
@@ -117,7 +117,7 @@ export class ProductsController {
     @Param('id') id: string,
     @Body() dto: CreateVariantDto,
   ) {
-    return this.products.createVariant(user.organizationId, id, dto);
+    return this.items.createVariant(user.organizationId, id, dto);
   }
 
   @ApiOperation({ summary: 'Editar variante' })
@@ -129,7 +129,7 @@ export class ProductsController {
     @Param('variantId') variantId: string,
     @Body() dto: UpdateVariantDto,
   ) {
-    return this.products.updateVariant(
+    return this.items.updateVariant(
       user.organizationId,
       id,
       variantId,
@@ -146,7 +146,7 @@ export class ProductsController {
     @Param('id') id: string,
     @Param('variantId') variantId: string,
   ) {
-    return this.products.deactivateVariant(
+    return this.items.deactivateVariant(
       user.organizationId,
       id,
       variantId,
@@ -165,7 +165,7 @@ export class ProductsController {
     @Param('id') id: string,
     @Body() dto: CreateExtraDto,
   ) {
-    return this.products.createExtra(user.organizationId, id, dto);
+    return this.items.createExtra(user.organizationId, id, dto);
   }
 
   @ApiOperation({ summary: 'Editar extra y su consumo de inventario' })
@@ -177,7 +177,7 @@ export class ProductsController {
     @Param('extraId') extraId: string,
     @Body() dto: UpdateExtraDto,
   ) {
-    return this.products.updateExtra(user.organizationId, id, extraId, dto);
+    return this.items.updateExtra(user.organizationId, id, extraId, dto);
   }
 
   @ApiOperation({ summary: 'Desactivar extra' })
@@ -189,7 +189,7 @@ export class ProductsController {
     @Param('id') id: string,
     @Param('extraId') extraId: string,
   ) {
-    return this.products.deactivateExtra(user.organizationId, id, extraId);
+    return this.items.deactivateExtra(user.organizationId, id, extraId);
   }
 
   // --------------------------------------------------------------------------
@@ -204,7 +204,7 @@ export class ProductsController {
     @Param('id') id: string,
     @Body() dto: ReplaceExclusionsDto,
   ) {
-    return this.products.replaceExclusions(
+    return this.items.replaceExclusions(
       user.organizationId,
       id,
       dto.exclusions,
@@ -219,7 +219,7 @@ export class ProductsController {
     @Param('id') id: string,
     @Body() dto: ReplaceComboComponentsDto,
   ) {
-    return this.products.replaceComboComponents(
+    return this.items.replaceComboComponents(
       user.organizationId,
       id,
       dto.components,

@@ -17,6 +17,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { UploadsModule } from './uploads/uploads.module';
 import { OriginGuard } from './common/guards/origin.guard';
 
 @Module({
@@ -41,6 +42,7 @@ import { OriginGuard } from './common/guards/origin.guard';
     OrdersModule,
     PaymentsModule,
     DashboardModule,
+    UploadsModule,
     HealthModule,
   ],
   controllers: [],

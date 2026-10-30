@@ -91,6 +91,12 @@ enum UnitCode {
   DOZEN
 }
 
+/// Tipo de categoría: agrupa artículos vendibles o recetas/preparaciones.
+enum CategoryKind {
+  ARTICLE
+  RECIPE
+}
+
 // ============================================================================
 // Identidad y organización
 // ============================================================================
@@ -110,6 +116,8 @@ model Organization {
   serviceTypes    String[]     @default([]) // Modelo de servicio: mesa, mostrador, etc.
   goals           String[]     @default([]) // Objetivos: inventario, costos, etc.
   hasBranches     Boolean      @default(false) // "Tengo sucursales"
+  /// Mostrar/activar la sección de insumos core sugeridos en Configuración.
+  useCoreSuggestions Boolean  @default(true)
 
   memberships             Membership[]
   branches                Branch[]
@@ -118,7 +126,7 @@ model Organization {
   inventoryMovements      InventoryMovement[]
   auditLogs               AuditLog[]
   categories              Category[]
-  products                Product[]
+  items                   Item[]
   ingredients             Ingredient[]
   recipes                 Recipe[]
   ingredientCategories    IngredientCategory[]
@@ -280,28 +288,40 @@ model PasswordResetToken {
 model Category {
   id          String   @id @default(cuid())
   organizationId String?
+  /// Identificador estable de las categorías core (breakfast, sauces, …).
+  code        String?
   name        String
   description String?
+  isCore      Boolean  @default(false) // true = parte del core, no editable
+  kind        CategoryKind @default(ARTICLE)
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  products    Product[]
+  items       Item[]
   recipes     Recipe[]
 
-  @@unique([organizationId, name])
+  @@unique([organizationId, kind, name])
+  @@unique([kind, code])
   @@index([organizationId])
+  @@index([kind, isCore])
 }
 
-model Product {
+/// Artículo del catálogo (lo que se vende en el POS).
+/// La tabla sigue llamándose `Product` para no migrar la base.
+model Item {
   id            String   @id @default(cuid())
   organizationId String?
   categoryId    String?
   name          String
   description   String?
   sku           String?  // Código interno / importación CSV
+  imageKey      String?  // Objeto en R2 (nombre hasheado); la URL se deriva
+  imageUrl      String?
+  /// Nombre normalizado y legible de la imagen (sin guiones ni extensión).
+  imageName     String?
   price         Decimal  @db.Decimal(12, 2) // Precio final con IVA incluido
   taxRate       Decimal? @db.Decimal(5, 4) // Tasa aplicable; null = no configurada (no se asume ninguna)
   isActive      Boolean  @default(true)
@@ -312,23 +332,28 @@ model Product {
 
   organization  Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   category      Category?    @relation(fields: [categoryId], references: [id])
-  variants      ProductVariant[]
-  extras        ProductExtra[]
+  variants      ItemVariant[]
+  extras        ItemExtra[]
   recipes       Recipe[]
-  orderItems    OrderItem[]  @relation("OrderItemProduct")
-  ingredientExclusions ProductIngredientExclusion[]
+  orderItems    OrderItem[]  @relation("OrderItemRef")
+  ingredientExclusions ItemIngredientExclusion[]
   comboComponents ComboComponent[] @relation("ComboComponents")
   componentOf   ComboComponent[]   @relation("ComboPartOf")
 
   @@unique([organizationId, sku])
   @@index([organizationId, isActive])
   @@index([categoryId])
+  @@map("Product")
 }
 
-model ProductVariant {
+model ItemVariant {
   id          String   @id @default(cuid())
-  productId   String
+  itemId      String   @map("productId")
   name        String   // ej: "Chico", "Regular", "Grande", "Sin azúcar"
+  /// SKU propio: el del artículo más el sufijo de la presentación (XVA101A).
+  sku         String?
+  /// Presentación que el menú muestra por defecto. Solo una por artículo.
+  isPrimary   Boolean  @default(false)
   priceAdjust Decimal  @db.Decimal(12, 2) @default(0.0000)
   /// Multiplicador del consumo de la receta base. Regular = 1.
   recipeFactor Decimal @db.Decimal(6, 3) @default(1)
@@ -337,28 +362,30 @@ model ProductVariant {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  item        Item  @relation(fields: [itemId], references: [id], onDelete: Cascade)
   orderItems  OrderItem[]
   recipes     Recipe[]
   comboComponents ComboComponent[]
 
-  @@index([productId])
+  @@index([itemId])
+  @@map("ProductVariant")
 }
 
-model ProductExtra {
+model ItemExtra {
   id          String   @id @default(cuid())
-  productId   String
+  itemId      String   @map("productId")
   name        String
   price       Decimal  @db.Decimal(12, 2)
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  item        Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
   orderItemExtras OrderItemExtra[]
-  ingredients ProductExtraIngredient[]
+  ingredients ItemExtraIngredient[]
 
-  @@index([productId])
+  @@index([itemId])
+  @@map("ProductExtra")
 }
 
 // ============================================================================
@@ -394,8 +421,8 @@ model Ingredient {
   producedByRecipe Recipe? @relation("RecipeProducedIngredient")
   inventoryMovements InventoryMovement[]
   equivalences   IngredientEquivalence[]
-  exclusions     ProductIngredientExclusion[]
-  extraIngredients ProductExtraIngredient[]
+  exclusions     ItemIngredientExclusion[]
+  extraIngredients ItemExtraIngredient[]
   orderItemExclusions OrderItemExclusion[]
   branchStocks   BranchStock[]
 
@@ -462,60 +489,62 @@ model IngredientEquivalence {
 }
 
 /// Ingredientes que el cliente puede pedir sin incluir ("sin cebolla").
-model ProductIngredientExclusion {
+model ItemIngredientExclusion {
   id           String   @id @default(cuid())
-  productId    String
+  itemId       String   @map("productId")
   ingredientId String
   label        String?
   createdAt    DateTime @default(now())
 
-  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  item         Item       @relation(fields: [itemId], references: [id], onDelete: Cascade)
   ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
 
-  @@unique([productId, ingredientId])
-  @@index([productId])
+  @@unique([itemId, ingredientId])
+  @@index([itemId])
   @@index([ingredientId])
+  @@map("ProductIngredientExclusion")
 }
 
 /// Componentes de un combo. No se permiten combos anidados (validación en API).
 model ComboComponent {
   id                 String   @id @default(cuid())
   comboId            String
-  componentProductId String
+  componentItemId    String   @map("componentProductId")
   componentVariantId String?
   quantity           Int      @default(1)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  combo              Product        @relation("ComboComponents", fields: [comboId], references: [id], onDelete: Cascade)
-  component          Product        @relation("ComboPartOf", fields: [componentProductId], references: [id], onDelete: Restrict)
-  variant            ProductVariant? @relation(fields: [componentVariantId], references: [id], onDelete: Restrict)
+  combo              Item         @relation("ComboComponents", fields: [comboId], references: [id], onDelete: Cascade)
+  componentItem      Item         @relation("ComboPartOf", fields: [componentItemId], references: [id], onDelete: Restrict)
+  variant            ItemVariant? @relation(fields: [componentVariantId], references: [id], onDelete: Restrict)
 
-  @@unique([comboId, componentProductId, componentVariantId])
+  @@unique([comboId, componentItemId, componentVariantId])
   @@index([comboId])
-  @@index([componentProductId])
+  @@index([componentItemId])
 }
 
 /// Consumo de inventario de un extra (cantidad en la unidad canónica del ingrediente).
-model ProductExtraIngredient {
+model ItemExtraIngredient {
   id             String   @id @default(cuid())
-  productExtraId String
+  itemExtraId    String   @map("productExtraId")
   ingredientId   String
   quantity       Decimal  @db.Decimal(12, 4)
 
-  productExtra   ProductExtra @relation(fields: [productExtraId], references: [id], onDelete: Cascade)
-  ingredient     Ingredient   @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  itemExtra      ItemExtra  @relation(fields: [itemExtraId], references: [id], onDelete: Cascade)
+  ingredient     Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
 
-  @@unique([productExtraId, ingredientId])
+  @@unique([itemExtraId, ingredientId])
   @@index([ingredientId])
+  @@map("ProductExtraIngredient")
 }
 
 model Recipe {
   id            String   @id @default(cuid())
   organizationId String?
   /// `null` = receta independiente (aún no publicada como artículo).
-  productId     String?
-  variantId     String? // null = receta base del producto
+  itemId        String?  @map("productId")
+  variantId     String? // null = receta base del artículo
   categoryId    String?
   name          String
   description   String?
@@ -528,13 +557,13 @@ model Recipe {
   updatedAt     DateTime @updatedAt
 
   organization  Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  product       Product?  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  variant       ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  item          Item?  @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  variant       ItemVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
   category      Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   producesIngredient Ingredient? @relation("RecipeProducedIngredient", fields: [producesIngredientId], references: [id], onDelete: SetNull)
   ingredients   RecipeIngredient[]
 
-  @@unique([productId, variantId])
+  @@unique([itemId, variantId])
   @@index([organizationId])
   @@index([variantId])
   @@index([categoryId])
@@ -681,12 +710,12 @@ model OrderRound {
 model OrderItem {
   id            String   @id @default(cuid())
   orderRoundId  String
-  productId     String
-  productVariantId String?
+  itemId        String   @map("productId")
+  itemVariantId String?  @map("productVariantId")
   // Copia histórica del catálogo al momento del pedido
-  productName   String
+  itemName      String   @map("productName")
   variantName   String?
-  productPrice  Decimal  @db.Decimal(12, 2)
+  itemPrice     Decimal  @db.Decimal(12, 2) @map("productPrice")
   taxRate       Decimal? @db.Decimal(5, 4)
   taxAmount     Decimal  @db.Decimal(12, 2) @default(0)
   quantity      Int      @default(1)
@@ -694,25 +723,25 @@ model OrderItem {
   subtotal      Decimal  @db.Decimal(12, 2)
 
   orderRound    OrderRound @relation(fields: [orderRoundId], references: [id], onDelete: Cascade)
-  product       Product   @relation("OrderItemProduct", fields: [productId], references: [id], onDelete: Restrict)
-  variant       ProductVariant? @relation(fields: [productVariantId], references: [id])
+  item          Item   @relation("OrderItemRef", fields: [itemId], references: [id], onDelete: Restrict)
+  variant       ItemVariant? @relation(fields: [itemVariantId], references: [id])
   extras        OrderItemExtra[]
   exclusions    OrderItemExclusion[]
   ingredientChoices OrderItemIngredientChoice[]
 
   @@index([orderRoundId])
-  @@index([productId])
+  @@index([itemId])
 }
 
 model OrderItemExtra {
   id            String   @id @default(cuid())
   orderItemId   String
-  productExtraId String?
+  itemExtraId   String?  @map("productExtraId")
   extraName     String
   extraPrice    Decimal  @db.Decimal(12, 2)
 
   orderItem     OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
-  productExtra  ProductExtra? @relation(fields: [productExtraId], references: [id])
+  itemExtra     ItemExtra? @relation(fields: [itemExtraId], references: [id])
 
   @@index([orderItemId])
 }

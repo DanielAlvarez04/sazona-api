@@ -43,6 +43,11 @@ export class CreateVariantDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  /** Presentación que el menú muestra por defecto (solo una por artículo). */
+  @IsOptional()
+  @IsBoolean()
+  isPrimary?: boolean;
 }
 
 export class UpdateVariantDto {
@@ -69,6 +74,11 @@ export class UpdateVariantDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  /** Presentación que el menú muestra por defecto (solo una por artículo). */
+  @IsOptional()
+  @IsBoolean()
+  isPrimary?: boolean;
 }
 
 export class ExtraIngredientInputDto {
@@ -147,7 +157,7 @@ export class ExclusionInputDto {
 export class ComboComponentInputDto {
   @IsString()
   @MinLength(1)
-  productId!: string;
+  itemId!: string;
 
   @IsOptional()
   @IsString()
@@ -161,7 +171,7 @@ export class ComboComponentInputDto {
   quantity?: number;
 }
 
-export class CreateProductDto {
+export class CreateItemDto {
   @IsString()
   @MinLength(1)
   @MaxLength(120)
@@ -187,7 +197,6 @@ export class CreateProductDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   price!: number;
-
   /** Tasa de IVA como fracción (0.16 = 16 %). Nunca se asume una por defecto. */
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 4 })
@@ -234,7 +243,7 @@ export class CreateProductDto {
   comboComponents?: ComboComponentInputDto[];
 }
 
-export class UpdateProductDto {
+export class UpdateItemDto {
   @IsOptional()
   @IsString()
   @MinLength(1)
@@ -253,6 +262,12 @@ export class UpdateProductDto {
     message: 'El SKU solo admite letras, números, punto, guion y guion bajo',
   })
   sku?: string | null;
+
+  /** Clave del objeto en R2; `null` quita la imagen del artículo. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  imageKey?: string | null;
 
   @IsOptional()
   @IsString()

@@ -548,10 +548,10 @@ export class OrdersService {
     items: RoundItemDto[],
     defaultTaxRate: Prisma.Decimal,
   ) {
-    const productIds = [...new Set(items.map((item) => item.productId))];
+    const itemIds = [...new Set(items.map((line) => line.itemId))];
 
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, organizationId },
+    const catalogItems = await this.prisma.item.findMany({
+      where: { id: { in: itemIds }, organizationId },
       include: {
         variants: true,
         extras: true,
@@ -559,28 +559,28 @@ export class OrdersService {
       },
     });
 
-    const byId = new Map(products.map((product) => [product.id, product]));
+    const byId = new Map(catalogItems.map((item) => [item.id, item]));
 
-    return items.map((item) => {
-      const product = byId.get(item.productId);
+    return items.map((line) => {
+      const item = byId.get(line.itemId);
 
-      if (!product) {
+      if (!item) {
         throw new BadRequestException(
           'Uno de los artículos del pedido no existe en el catálogo',
         );
       }
 
-      if (!product.isActive) {
-        throw new BadRequestException(`${product.name} está desactivado`);
+      if (!item.isActive) {
+        throw new BadRequestException(`${item.name} está desactivado`);
       }
 
-      const variant = item.variantId
-        ? product.variants.find((candidate) => candidate.id === item.variantId)
+      const variant = line.variantId
+        ? item.variants.find((candidate) => candidate.id === line.variantId)
         : undefined;
 
-      if (item.variantId && !variant) {
+      if (line.variantId && !variant) {
         throw new BadRequestException(
-          `La variante no pertenece a ${product.name}`,
+          `La variante no pertenece a ${item.name}`,
         );
       }
 
@@ -590,14 +590,14 @@ export class OrdersService {
         );
       }
 
-      const extras = (item.extras ?? []).map((selection) => {
-        const extra = product.extras.find(
+      const extras = (line.extras ?? []).map((selection) => {
+        const extra = item.extras.find(
           (candidate) => candidate.id === selection.extraId,
         );
 
         if (!extra) {
           throw new BadRequestException(
-            `El extra no pertenece a ${product.name}`,
+            `El extra no pertenece a ${item.name}`,
           );
         }
 
@@ -610,15 +610,15 @@ export class OrdersService {
         return extra;
       });
 
-      const exclusions = (item.excludedIngredientIds ?? []).map(
+      const exclusions = (line.excludedIngredientIds ?? []).map(
         (ingredientId) => {
-          const allowed = product.ingredientExclusions.some(
+          const allowed = item.ingredientExclusions.some(
             (exclusion) => exclusion.ingredientId === ingredientId,
           );
 
           if (!allowed) {
             throw new BadRequestException(
-              `Ese ingrediente no se puede quitar de ${product.name}`,
+              `Ese ingrediente no se puede quitar de ${item.name}`,
             );
           }
 
@@ -626,33 +626,33 @@ export class OrdersService {
         },
       );
 
-      const quantity = item.quantity ?? 1;
+      const quantity = line.quantity ?? 1;
 
       const unitPrice = extras.reduce(
         (sum, extra) => sum.plus(extra.price),
-        product.price.plus(variant?.priceAdjust ?? 0),
+        item.price.plus(variant?.priceAdjust ?? 0),
       );
 
       const subtotal = unitPrice.times(quantity).toDecimalPlaces(2);
-      const taxRate = product.taxRate ?? defaultTaxRate;
+      const taxRate = item.taxRate ?? defaultTaxRate;
       const taxAmount = taxRate.gt(0)
         ? subtotal.minus(subtotal.dividedBy(taxRate.plus(1))).toDecimalPlaces(2)
         : new Prisma.Decimal(0);
 
       return {
-        productId: product.id,
-        productVariantId: variant?.id ?? null,
-        productName: product.name,
+        itemId: item.id,
+        itemVariantId: variant?.id ?? null,
+        itemName: item.name,
         variantName: variant?.name ?? null,
-        productPrice: unitPrice.toDecimalPlaces(2),
+        itemPrice: unitPrice.toDecimalPlaces(2),
         taxRate,
         taxAmount,
         quantity,
-        notes: item.notes?.trim() || null,
+        notes: line.notes?.trim() || null,
         subtotal,
         extras: {
           create: extras.map((extra) => ({
-            productExtraId: extra.id,
+            itemExtraId: extra.id,
             extraName: extra.name,
             extraPrice: extra.price,
           })),
@@ -720,7 +720,7 @@ export class OrdersService {
         extras: true,
         exclusions: true,
         ingredientChoices: true,
-        product: {
+        item: {
           include: {
             variants: { select: { id: true, recipeFactor: true } },
             recipes: {
@@ -731,7 +731,7 @@ export class OrdersService {
             comboComponents: {
               include: {
                 variant: { select: { id: true, recipeFactor: true } },
-                component: {
+                componentItem: {
                   include: {
                     recipes: {
                       where: { isActive: true },
@@ -925,14 +925,14 @@ interface VariantLike {
  * - Exclusiones: el ingrediente que el cliente quitó no se descuenta.
  */
 function consumptionForItem(item: {
-  productVariantId: string | null;
-  extras: Array<{ productExtraId: string | null }>;
+  itemVariantId: string | null;
+  extras: Array<{ itemExtraId: string | null }>;
   exclusions: Array<{ ingredientId: string }>;
   ingredientChoices: Array<{
     recipeIngredientId: string;
     ingredientId: string;
   }>;
-  product: {
+  item: {
     isCombo: boolean;
     variants: VariantLike[];
     recipes: RecipeLike[];
@@ -947,7 +947,7 @@ function consumptionForItem(item: {
       componentVariantId: string | null;
       quantity: number;
       variant: VariantLike | null;
-      component: {
+      componentItem: {
         recipes: RecipeLike[];
       };
     }>;
@@ -1009,10 +1009,10 @@ function consumptionForItem(item: {
     }
   };
 
-  if (item.product.isCombo) {
-    for (const component of item.product.comboComponents) {
+  if (item.item.isCombo) {
+    for (const component of item.item.comboComponents) {
       pushRecipe(
-        component.component.recipes,
+        component.componentItem.recipes,
         component.componentVariantId,
         new Prisma.Decimal(component.quantity),
         component.variant ? [component.variant] : [],
@@ -1020,16 +1020,16 @@ function consumptionForItem(item: {
     }
   } else {
     pushRecipe(
-      item.product.recipes,
-      item.productVariantId,
+      item.item.recipes,
+      item.itemVariantId,
       new Prisma.Decimal(1),
-      item.product.variants,
+      item.item.variants,
     );
   }
 
   for (const extra of item.extras) {
-    const catalogExtra = item.product.extras.find(
-      (candidate) => candidate.id === extra.productExtraId,
+    const catalogExtra = item.item.extras.find(
+      (candidate) => candidate.id === extra.itemExtraId,
     );
 
     if (!catalogExtra) {

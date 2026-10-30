@@ -3,13 +3,14 @@
 // Uso: npm run prisma:seed
 import { config } from 'dotenv';
 import { hash } from 'argon2';
-import { PrismaClient, Prisma, UnitCode } from '@prisma/client';
+import { PrismaClient, Prisma, UnitCode, CategoryKind } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   canonicalUnit,
   toCanonicalCost,
   toCanonicalQuantity,
 } from '../src/common/units';
+import { CORE_CATEGORIES } from '../src/catalog/core-categories';
 
 config();
 
@@ -138,12 +139,47 @@ async function main() {
     // Catálogo ficticio de la cafetería (no es el menú real)
     // ------------------------------------------------------------------------
 
+    // Categorías core compartidas (también las siembra la app al iniciar sesión).
+    for (const core of CORE_CATEGORIES) {
+      await prisma.category.upsert({
+        where: {
+          kind_code: { kind: core.kind, code: core.code },
+        },
+        update: {
+          name: core.name,
+          description: core.description,
+          kind: core.kind,
+          sortOrder: core.sortOrder,
+          isCore: true,
+          isActive: true,
+          organizationId: null,
+        },
+        create: {
+          organizationId: null,
+          code: core.code,
+          name: core.name,
+          description: core.description,
+          kind: core.kind,
+          sortOrder: core.sortOrder,
+          isCore: true,
+          isActive: true,
+        },
+      });
+    }
+
+    const coreCategory = async (code: string, kind: CategoryKind) => {
+      const category = await prisma.category.findUniqueOrThrow({
+        where: { kind_code: { kind, code } },
+      });
+      return category;
+    };
+
     const categories = {
-      calientes: await ensureCategory(prisma, org.id, 'Bebidas calientes', 1),
-      frias: await ensureCategory(prisma, org.id, 'Bebidas frías', 2),
-      panaderia: await ensureCategory(prisma, org.id, 'Panadería', 3),
-      combos: await ensureCategory(prisma, org.id, 'Combos', 4),
-      salsas: await ensureCategory(prisma, org.id, 'Salsas y complementos', 5),
+      calientes: await coreCategory('hot_drinks', CategoryKind.ARTICLE),
+      frias: await coreCategory('cold_drinks', CategoryKind.ARTICLE),
+      panaderia: await coreCategory('bakery', CategoryKind.ARTICLE),
+      combos: await coreCategory('combos', CategoryKind.ARTICLE),
+      salsas: await coreCategory('sauces', CategoryKind.RECIPE),
     };
 
     const ingredients = {
@@ -318,7 +354,7 @@ async function main() {
       },
     });
 
-    const espresso = await ensureProduct(prisma, org.id, {
+    const espresso = await ensureItem(prisma, org.id, {
       sku: 'CAF-ESP',
       name: 'Espresso',
       description: 'Café solo de 30 ml',
@@ -328,7 +364,7 @@ async function main() {
       sortOrder: 1,
     });
 
-    const latte = await ensureProduct(prisma, org.id, {
+    const latte = await ensureItem(prisma, org.id, {
       sku: 'CAF-LAT',
       name: 'Latte',
       description: 'Espresso con leche vaporizada',
@@ -352,7 +388,7 @@ async function main() {
       ],
     });
 
-    const matchaLatte = await ensureProduct(prisma, org.id, {
+    const matchaLatte = await ensureItem(prisma, org.id, {
       sku: 'CAF-MAT',
       name: 'Matcha latte',
       description: 'Matcha con leche',
@@ -365,7 +401,7 @@ async function main() {
       ],
     });
 
-    const croissant = await ensureProduct(prisma, org.id, {
+    const croissant = await ensureItem(prisma, org.id, {
       sku: 'PAN-CRO',
       name: 'Croissant',
       description: 'Hojaldre de mantequilla',
@@ -375,7 +411,7 @@ async function main() {
       sortOrder: 1,
     });
 
-    const chocolateCaliente = await ensureProduct(prisma, org.id, {
+    const chocolateCaliente = await ensureItem(prisma, org.id, {
       sku: 'CAF-CHO',
       name: 'Chocolate caliente',
       description: 'Chocolate con leche',
@@ -389,7 +425,7 @@ async function main() {
       (variant) => variant.name === 'Grande',
     );
 
-    const combo = await ensureProduct(prisma, org.id, {
+    const combo = await ensureItem(prisma, org.id, {
       sku: 'COM-DES',
       name: 'Combo desayuno',
       description: 'Latte mediano + croissant',
@@ -400,12 +436,12 @@ async function main() {
       sortOrder: 1,
       comboComponents: [
         {
-          componentProductId: latte.id,
+          componentItemId: latte.id,
           componentVariantId: latte.variants.find((v) => v.name === 'Mediano')
             ?.id,
           quantity: 1,
         },
-        { componentProductId: croissant.id, quantity: 1 },
+        { componentItemId: croissant.id, quantity: 1 },
       ],
     });
 
@@ -472,7 +508,7 @@ async function main() {
 
     // Alternativa del ingrediente "leche": leche entera (default) o de coco.
     const chocolateRecipe = await prisma.recipe.findFirst({
-      where: { organizationId: org.id, productId: chocolateCaliente.id },
+      where: { organizationId: org.id, itemId: chocolateCaliente.id },
       include: { ingredients: true },
     });
     const milkLine = chocolateRecipe?.ingredients.find(
@@ -498,7 +534,7 @@ async function main() {
 
     // Receta independiente que también es insumo: salsa verde por lote.
     const salsaRecipe = await prisma.recipe.findFirst({
-      where: { organizationId: org.id, productId: null, name: 'Salsa verde' },
+      where: { organizationId: org.id, itemId: null, name: 'Salsa verde' },
     });
 
     if (!salsaRecipe) {
@@ -544,7 +580,7 @@ async function main() {
     console.log(`  Ingredientes : ${Object.keys(ingredients).length}`);
     console.log(
       `  Productos    : ${[espresso, latte, matchaLatte, croissant, chocolateCaliente, combo]
-        .map((product) => product.name)
+        .map((item) => item.name)
         .join(', ')}`,
     );
     console.log(`  Credenciales : ${TEST_EMAIL} / ${TEST_PASSWORD}`);
@@ -554,19 +590,6 @@ async function main() {
 }
 
 type Prisma = PrismaClient;
-
-async function ensureCategory(
-  prisma: Prisma,
-  organizationId: string,
-  name: string,
-  sortOrder: number,
-) {
-  return prisma.category.upsert({
-    where: { organizationId_name: { organizationId, name } },
-    update: { isActive: true },
-    create: { organizationId, name, sortOrder },
-  });
-}
 
 interface IngredientSeed {
   name: string;
@@ -618,7 +641,7 @@ async function ensureIngredient(
   });
 }
 
-interface ProductSeed {
+interface ItemSeed {
   sku: string;
   name: string;
   description?: string;
@@ -639,18 +662,18 @@ interface ProductSeed {
   }>;
   exclusions?: Array<{ ingredientId: string; label?: string }>;
   comboComponents?: Array<{
-    componentProductId: string;
+    componentItemId: string;
     componentVariantId?: string;
     quantity: number;
   }>;
 }
 
-async function ensureProduct(
+async function ensureItem(
   prisma: Prisma,
   organizationId: string,
-  data: ProductSeed,
+  data: ItemSeed,
 ) {
-  const existing = await prisma.product.findUnique({
+  const existing = await prisma.item.findUnique({
     where: { organizationId_sku: { organizationId, sku: data.sku } },
     include: { variants: true },
   });
@@ -659,7 +682,7 @@ async function ensureProduct(
     return existing;
   }
 
-  return prisma.product.create({
+  return prisma.item.create({
     data: {
       organizationId,
       categoryId: data.categoryId,
@@ -694,7 +717,7 @@ async function ensureProduct(
       comboComponents: {
         create: (data.comboComponents ?? []).map((component) => ({
           quantity: component.quantity,
-          component: { connect: { id: component.componentProductId } },
+          componentItem: { connect: { id: component.componentItemId } },
           ...(component.componentVariantId
             ? { variant: { connect: { id: component.componentVariantId } } }
             : {}),
@@ -708,13 +731,13 @@ async function ensureProduct(
 async function ensureRecipe(
   prisma: Prisma,
   organizationId: string,
-  productId: string,
+  itemId: string,
   variantId: string | null,
   name: string,
   ingredients: Array<{ ingredientId: string; quantity: string }>,
 ) {
   const existing = await prisma.recipe.findFirst({
-    where: { productId, variantId },
+    where: { itemId, variantId },
   });
 
   if (existing) {
@@ -742,7 +765,7 @@ async function ensureRecipe(
   return prisma.recipe.create({
     data: {
       organizationId,
-      productId,
+      itemId,
       variantId,
       name,
       ingredients: {

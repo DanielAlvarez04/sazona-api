@@ -132,7 +132,7 @@ export class DeleteIngredientsDto {
 }
 
 /** Producto del catálogo core que se quiere tener en el inventario. */
-export class SyncCoreProductDto {
+export class SyncCoreItemDto {
   @IsString()
   @MinLength(2)
   @MaxLength(120)
@@ -151,18 +151,35 @@ export class SyncCoreProductDto {
   location!: string;
 }
 
-export class SyncCoreProductsDto {
+export class SyncCoreItemsDto {
   @IsArray()
   @ArrayMaxSize(300)
   @ValidateNested({ each: true })
-  @Type(() => SyncCoreProductDto)
-  products!: SyncCoreProductDto[];
+  @Type(() => SyncCoreItemDto)
+  items!: SyncCoreItemDto[];
 
   /** Nombres del catálogo que el usuario dejó desmarcados. */
   @IsArray()
   @ArrayMaxSize(300)
   @IsString({ each: true })
   removeNames!: string[];
+
+  /**
+   * Igual que `removeNames`, pero con los datos del preset para validar que el
+   * insumo no haya sido modificado antes de desactivarlo.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(300)
+  @ValidateNested({ each: true })
+  @Type(() => SyncCoreItemDto)
+  removeItems?: SyncCoreItemDto[];
+}
+
+/** Activar/desactivar todas las categorías core de inventario. */
+export class UpdateCoreIngredientCategoriesDto {
+  @IsBoolean()
+  isActive!: boolean;
 }
 
 export class UpdateIngredientDto {

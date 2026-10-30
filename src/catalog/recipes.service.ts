@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InventoryMovementType, Prisma, UnitCode } from '@prisma/client';
+import { InventoryMovementType, Prisma, UnitCode, CategoryKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   canonicalUnit,
@@ -35,7 +35,7 @@ const ingredientSelect = {
 
 const recipeInclude = {
   category: { select: { id: true, name: true } },
-  product: { select: { id: true, name: true, sku: true, price: true, isActive: true } },
+  item: { select: { id: true, name: true, sku: true, price: true, isActive: true } },
   producesIngredient: {
     select: {
       id: true,
@@ -95,9 +95,9 @@ export class RecipesService {
         ...(filters.includeInactive ? {} : { isActive: true }),
         ...(filters.categoryId ? { categoryId: filters.categoryId } : {}),
         ...(filters.publication === 'published'
-          ? { productId: { not: null } }
+          ? { itemId: { not: null } }
           : filters.publication === 'standalone'
-            ? { productId: null }
+            ? { itemId: null }
             : {}),
         ...(filters.producesIngredient ? { producesIngredientId: { not: null } } : {}),
         ...(search ? { name: { contains: search, mode: 'insensitive' as const } } : {}),
@@ -274,7 +274,7 @@ export class RecipesService {
   async remove(organizationId: string | null, id: string) {
     const recipe = await this.getRecipe(organizationId, id);
 
-    if (recipe.productId) {
+    if (recipe.itemId) {
       throw new BadRequestException(
         'La receta está publicada como artículo. Despublícala antes de eliminarla.',
       );
@@ -306,28 +306,28 @@ export class RecipesService {
   async unpublish(organizationId: string | null, id: string) {
     const recipe = await this.getRecipe(organizationId, id);
 
-    if (!recipe.productId) {
+    if (!recipe.itemId) {
       throw new BadRequestException('La receta no está publicada como artículo');
     }
 
-    const productId = recipe.productId;
+    const itemId = recipe.itemId;
 
     await this.prisma.$transaction(async (tx) => {
-      const orders = await tx.orderItem.count({ where: { productId } });
+      const orders = await tx.orderItem.count({ where: { itemId } });
 
       await tx.recipe.update({
         where: { id: recipe.id },
-        data: { productId: null },
+        data: { itemId: null },
       });
 
       if (orders > 0) {
         // Conserva el artículo para el historial de pedidos, pero ya no se vende.
-        await tx.product.update({
-          where: { id: productId },
+        await tx.item.update({
+          where: { id: itemId },
           data: { isActive: false },
         });
       } else {
-        await tx.product.delete({ where: { id: productId } });
+        await tx.item.delete({ where: { id: itemId } });
       }
     });
 
@@ -495,7 +495,7 @@ export class RecipesService {
   ) {
     const recipe = await tx.recipe.findUniqueOrThrow({ where: { id: recipeId } });
 
-    if (recipe.productId) {
+    if (recipe.itemId) {
       throw new BadRequestException('La receta ya está publicada como artículo');
     }
 
@@ -508,7 +508,7 @@ export class RecipesService {
     const sku = dto.sku?.trim() || null;
 
     if (sku) {
-      const existing = await tx.product.findFirst({
+      const existing = await tx.item.findFirst({
         where: { organizationId, sku: { equals: sku, mode: 'insensitive' } },
         select: { id: true },
       });
@@ -527,7 +527,7 @@ export class RecipesService {
             { name: 'Grande', priceAdjust: 0, recipeFactor: 1.3, sortOrder: 2 },
           ];
 
-    const product = await tx.product.create({
+    const item = await tx.item.create({
       data: {
         organizationId,
         categoryId,
@@ -554,7 +554,7 @@ export class RecipesService {
 
     await tx.recipe.update({
       where: { id: recipe.id },
-      data: { productId: product.id },
+      data: { itemId: item.id },
     });
   }
 
@@ -665,13 +665,23 @@ export class RecipesService {
     const category = await this.prisma.category.findFirst({
       where: {
         id: categoryId,
-        OR: [{ organizationId }, { organizationId: null }],
+        OR: [{ organizationId }, { organizationId: null, isCore: true }],
       },
-      select: { id: true },
+      select: { id: true, kind: true, isActive: true },
     });
 
     if (!category) {
       throw new NotFoundException('Categoría no encontrada');
+    }
+
+    if (!category.isActive) {
+      throw new BadRequestException('La categoría está desactivada');
+    }
+
+    if (category.kind !== CategoryKind.RECIPE) {
+      throw new BadRequestException(
+        'La categoría no es de recetas y preparaciones',
+      );
     }
   }
 

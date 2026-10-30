@@ -4,23 +4,32 @@
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, CategoryKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { IngredientQuantitiesService } from './ingredient-quantities.service';
 import { fromCanonicalQuantity, toMoney } from '../common/units';
+import { alphabetSuffix, categoryInitials } from '../common/sku';
+import {
+  deleteR2Object,
+  imageSnapshotName,
+  itemImageFolder,
+  maxUploadBytes,
+  objectSize,
+  publicUrlForKey,
+} from '../uploads/r2';
 import {
   ComboComponentInputDto,
   CreateExtraDto,
-  CreateProductDto,
+  CreateItemDto,
   CreateVariantDto,
   ExclusionInputDto,
   ExtraIngredientInputDto,
   UpdateExtraDto,
-  UpdateProductDto,
+  UpdateItemDto,
   UpdateVariantDto,
-} from './dto/product.dto';
+} from './dto/item.dto';
 
-const productListInclude = {
+const itemListInclude = {
   category: { select: { id: true, name: true } },
   variants: { orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }] },
   extras: { orderBy: { name: 'asc' } },
@@ -37,9 +46,9 @@ const productListInclude = {
     select: { id: true, name: true, variantId: true, isActive: true },
     orderBy: { variantId: 'asc' },
   },
-} satisfies Prisma.ProductInclude;
+} satisfies Prisma.ItemInclude;
 
-const productDetailInclude = {
+const itemDetailInclude = {
   category: { select: { id: true, name: true } },
   variants: {
     orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
@@ -72,7 +81,7 @@ const productDetailInclude = {
   },
   comboComponents: {
     include: {
-      component: {
+      componentItem: {
         select: { id: true, name: true, price: true, isActive: true },
       },
       variant: { select: { id: true, name: true } },
@@ -91,9 +100,9 @@ const productDetailInclude = {
       },
     },
   },
-} satisfies Prisma.ProductInclude;
+} satisfies Prisma.ItemInclude;
 
-export interface ProductFilters {
+export interface ItemFilters {
   search?: string;
   categoryId?: string;
   includeInactive?: boolean;
@@ -101,16 +110,16 @@ export interface ProductFilters {
 }
 
 @Injectable()
-export class ProductsService {
+export class ItemsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly ingredientQuantities: IngredientQuantitiesService,
   ) {}
 
-  list(organizationId: string | null, filters: ProductFilters = {}) {
+  list(organizationId: string | null, filters: ItemFilters = {}) {
     const search = filters.search?.trim();
 
-    return this.prisma.product.findMany({
+    return this.prisma.item.findMany({
       where: {
         organizationId,
         ...(filters.includeInactive ? {} : { isActive: true }),
@@ -125,7 +134,7 @@ export class ProductsService {
             }
           : {}),
       },
-      include: productListInclude,
+      include: itemListInclude,
       orderBy: [
         { category: { sortOrder: 'asc' } },
         { sortOrder: 'asc' },
@@ -135,16 +144,16 @@ export class ProductsService {
   }
 
   async findOne(organizationId: string | null, id: string) {
-    const product = await this.prisma.product.findFirst({
+    const item = await this.prisma.item.findFirst({
       where: { id, organizationId },
-      include: productDetailInclude,
+      include: itemDetailInclude,
     });
 
-    if (!product) {
+    if (!item) {
       throw new NotFoundException('Artículo no encontrado');
     }
 
-    return this.withDisplayUnits(product);
+    return this.withDisplayUnits(item);
   }
 
   /**
@@ -152,11 +161,11 @@ export class ProductsService {
    * ingrediente; la UI las recibe en su unidad visible.
    */
   private withDisplayUnits(
-    product: Prisma.ProductGetPayload<{ include: typeof productDetailInclude }>,
+    item: Prisma.ItemGetPayload<{ include: typeof itemDetailInclude }>,
   ) {
     return {
-      ...product,
-      extras: (product.extras ?? []).map((extra) => ({
+      ...item,
+      extras: (item.extras ?? []).map((extra) => ({
         ...extra,
         ingredients: (extra.ingredients ?? []).map((item) => ({
           ...item,
@@ -173,7 +182,7 @@ export class ProductsService {
           },
         })),
       })),
-      recipes: (product.recipes ?? []).map((recipe) => ({
+      recipes: (item.recipes ?? []).map((recipe) => ({
         ...recipe,
         ingredients: (recipe.ingredients ?? []).map((item) => ({
           ...item,
@@ -186,17 +195,26 @@ export class ProductsService {
     };
   }
 
-  async create(organizationId: string | null, dto: CreateProductDto) {
+  async create(organizationId: string | null, dto: CreateItemDto) {
     const name = dto.name.trim();
 
-    if (dto.categoryId) {
-      await this.assertCategory(organizationId, dto.categoryId);
+    const category = dto.categoryId
+      ? await this.assertCategory(organizationId, dto.categoryId)
+      : null;
+
+    // El SKU es automático: `X` + iniciales de la categoría + consecutivo.
+    const providedSku = normalizeSku(dto.sku);
+    if (providedSku) {
+      await this.assertSkuAvailable(organizationId, providedSku);
     }
 
-    const sku = normalizeSku(dto.sku);
-    if (sku) {
-      await this.assertSkuAvailable(organizationId, sku);
-    }
+    const sku =
+      providedSku ??
+      (await this.generateArticleSku(organizationId, category?.name ?? null));
+
+    const variants = dto.variants ?? [];
+    const primaryIndex = variants.findIndex((variant) => variant.isPrimary);
+    const primary = primaryIndex >= 0 ? primaryIndex : 0;
 
     const isCombo = dto.isCombo ?? false;
     const comboComponents = dto.comboComponents ?? [];
@@ -234,7 +252,7 @@ export class ProductsService {
       })),
     );
 
-    const product = await this.prisma.product.create({
+    const item = await this.prisma.item.create({
       data: {
         organizationId,
         categoryId: dto.categoryId ?? null,
@@ -249,11 +267,13 @@ export class ProductsService {
         isCombo,
         sortOrder: dto.sortOrder ?? 0,
         variants: {
-          create: (dto.variants ?? []).map((variant) => ({
+          create: variants.map((variant, index) => ({
             name: variant.name.trim(),
+            sku: `${sku}${alphabetSuffix(index)}`,
+            isPrimary: index === primary,
             priceAdjust: toMoney(variant.priceAdjust ?? 0),
             recipeFactor: new Prisma.Decimal(variant.recipeFactor ?? 1),
-            sortOrder: variant.sortOrder ?? 0,
+            sortOrder: variant.sortOrder ?? index,
             isActive: variant.isActive ?? true,
           })),
         },
@@ -279,7 +299,7 @@ export class ProductsService {
         comboComponents: {
           create: components.map((component) => ({
             quantity: component.quantity,
-            component: { connect: { id: component.componentProductId } },
+            componentItem: { connect: { id: component.componentItemId } },
             ...(component.componentVariantId
               ? { variant: { connect: { id: component.componentVariantId } } }
               : {}),
@@ -288,33 +308,47 @@ export class ProductsService {
       },
     });
 
-    return this.findOne(organizationId, product.id);
+    return this.findOne(organizationId, item.id);
   }
 
-  async update(organizationId: string | null, id: string, dto: UpdateProductDto) {
-    const product = await this.getProduct(organizationId, id);
+  async update(organizationId: string | null, id: string, dto: UpdateItemDto) {
+    const item = await this.getItem(organizationId, id);
 
-    if (dto.categoryId !== undefined && dto.categoryId !== null) {
-      await this.assertCategory(organizationId, dto.categoryId);
+    const category = dto.categoryId
+      ? await this.assertCategory(organizationId, dto.categoryId)
+      : null;
+
+    const categoryChanged =
+      dto.categoryId !== undefined &&
+      (dto.categoryId ?? null) !== item.categoryId;
+
+    let sku = dto.sku === undefined ? undefined : normalizeSku(dto.sku);
+
+    if (sku) {
+      await this.assertSkuAvailable(organizationId, sku, item.id);
     }
 
-    if (dto.sku !== undefined && dto.sku !== null) {
-      const sku = normalizeSku(dto.sku);
-      if (sku) {
-        await this.assertSkuAvailable(organizationId, sku, product.id);
-      }
+    // Cambiar de categoría (o estrenar el SKU) regenera el código y sus sufijos.
+    if (!sku && (categoryChanged || !item.sku)) {
+      sku = await this.generateArticleSku(
+        organizationId,
+        category?.name ?? null,
+        item.id,
+      );
     }
 
-    if (dto.isCombo === false && product.isCombo) {
+    const imageKey = dto.imageKey;
+
+    if (dto.isCombo === false && item.isCombo) {
       await this.prisma.comboComponent.deleteMany({
-        where: { comboId: product.id },
+        where: { comboId: item.id },
       });
     }
 
-    if (dto.isCombo === true && !product.isCombo) {
+    if (dto.isCombo === true && !item.isCombo) {
       const usedAsComponent = await this.prisma.comboComponent.count({
         where: {
-          componentProductId: product.id,
+          componentItemId: item.id,
           combo: { isActive: true },
         },
       });
@@ -326,15 +360,15 @@ export class ProductsService {
       }
     }
 
-    await this.prisma.product.update({
-      where: { id: product.id },
+    await this.prisma.item.update({
+      where: { id: item.id },
       data: {
         name: dto.name?.trim(),
         description:
           dto.description === undefined
             ? undefined
             : normalizeOptional(dto.description),
-        sku: dto.sku === undefined ? undefined : normalizeSku(dto.sku),
+        sku: dto.sku === undefined ? sku : normalizeSku(dto.sku),
         categoryId: dto.categoryId,
         price: dto.price === undefined ? undefined : toMoney(dto.price),
         taxRate:
@@ -349,11 +383,26 @@ export class ProductsService {
       },
     });
 
-    if (dto.variants !== undefined) {
-      await this.syncVariants(product.id, dto.variants);
+    if (imageKey !== undefined) {
+      // Guarda la imagen en la carpeta del artículo y borra la anterior para
+      // que solo quede una por artículo.
+      await this.applyItemImage(
+        organizationId,
+        item.id,
+        dto.name?.trim() || item.name,
+        imageKey,
+        item.imageKey,
+      );
     }
 
-    return this.findOne(organizationId, product.id);
+    if (dto.variants !== undefined) {
+      await this.syncVariants(item.id, dto.variants, sku ?? item.sku);
+    } else if (sku && sku !== item.sku) {
+      // La base cambió sin tocar presentaciones: solo se renumeran los sufijos.
+      await this.renumberVariantSkus(item.id, sku);
+    }
+
+    return this.findOne(organizationId, item.id);
   }
 
   /**
@@ -362,38 +411,49 @@ export class ProductsService {
    * pedidos históricos).
    */
   private async syncVariants(
-    productId: string,
+    itemId: string,
     variants: CreateVariantDto[],
+    baseSku: string | null,
   ) {
-    const existing = await this.prisma.productVariant.findMany({
-      where: { productId },
+    const existing = await this.prisma.itemVariant.findMany({
+      where: { itemId },
     });
     const incoming = new Set(
       variants.map((variant) => variant.name.trim().toLowerCase()),
     );
+    const primaryIndex = await this.resolvePrimaryIndex(itemId, variants);
 
     for (const [index, variant] of variants.entries()) {
       const name = variant.name.trim();
       const match = existing.find(
         (candidate) => candidate.name.trim().toLowerCase() === name.toLowerCase(),
       );
+      const sku = baseSku ? `${baseSku}${alphabetSuffix(index)}` : undefined;
 
       if (match) {
-        await this.prisma.productVariant.update({
+        await this.prisma.itemVariant.update({
           where: { id: match.id },
           data: {
             name,
+            sku,
+            isPrimary: index === primaryIndex,
             priceAdjust: toMoney(variant.priceAdjust ?? 0),
-            recipeFactor: new Prisma.Decimal(variant.recipeFactor ?? 1),
+            // Sin factor en el DTO se conserva el actual (recetas publicadas).
+            recipeFactor:
+              variant.recipeFactor === undefined
+                ? undefined
+                : new Prisma.Decimal(variant.recipeFactor),
             sortOrder: variant.sortOrder ?? index,
             isActive: variant.isActive ?? true,
           },
         });
       } else {
-        await this.prisma.productVariant.create({
+        await this.prisma.itemVariant.create({
           data: {
-            productId,
+            itemId,
             name,
+            sku,
+            isPrimary: index === primaryIndex,
             priceAdjust: toMoney(variant.priceAdjust ?? 0),
             recipeFactor: new Prisma.Decimal(variant.recipeFactor ?? 1),
             sortOrder: variant.sortOrder ?? index,
@@ -408,20 +468,195 @@ export class ProductsService {
         variant.isActive &&
         !incoming.has(variant.name.trim().toLowerCase())
       ) {
-        await this.prisma.productVariant.update({
+        await this.prisma.itemVariant.update({
           where: { id: variant.id },
-          data: { isActive: false },
+          data: { isActive: false, isPrimary: false },
         });
       }
     }
   }
 
+  /**
+   * Índice de la presentación principal.
+   *
+   * Si el DTO no marca ninguna se conserva la que ya lo era (para no robarle
+   * la primacía a los clientes que no envían el campo); si no hay, la primera.
+   */
+  private async resolvePrimaryIndex(
+    itemId: string,
+    variants: CreateVariantDto[],
+  ): Promise<number> {
+    const explicit = variants.findIndex((variant) => variant.isPrimary);
+
+    if (explicit >= 0) return explicit;
+
+    const current = await this.prisma.itemVariant.findFirst({
+      where: { itemId, isPrimary: true },
+      select: { name: true },
+    });
+
+    if (current) {
+      const index = variants.findIndex(
+        (variant) =>
+          variant.name.trim().toLowerCase() ===
+          current.name.trim().toLowerCase(),
+      );
+
+      if (index >= 0) return index;
+    }
+
+    return 0;
+  }
+
+  /** Renumera los sufijos de SKU cuando cambia la base sin tocar presentaciones. */
+  private async renumberVariantSkus(itemId: string, baseSku: string) {
+    const variants = await this.prisma.itemVariant.findMany({
+      where: { itemId },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+
+    for (const [index, variant] of variants.entries()) {
+      await this.prisma.itemVariant.update({
+        where: { id: variant.id },
+        data: { sku: `${baseSku}${alphabetSuffix(index)}` },
+      });
+    }
+  }
+
+  /**
+   * Guarda la imagen del artículo y borra la anterior.
+   *
+   * La subida ya fue directa a `{org}/catalog/{itemId}/{hash}.{ext}`, así que
+   * aquí solo se valida la clave, se comprueba el tamaño real y se elimina el
+   * objeto anterior: solo queda una imagen por artículo en el bucket.
+   */
+  private async applyItemImage(
+    organizationId: string | null,
+    itemId: string,
+    name: string,
+    imageKey: string | null,
+    previousKey: string | null,
+  ) {
+    if (imageKey === previousKey) return;
+
+    if (!organizationId) {
+      throw new BadRequestException(
+        'Selecciona una organización antes de guardar imágenes',
+      );
+    }
+
+    if (imageKey === null) {
+      await this.prisma.item.update({
+        where: { id: itemId },
+        data: { imageKey: null, imageUrl: null, imageName: null },
+      });
+
+      // La base ya no apunta a la imagen: el objeto puede borrarse.
+      if (previousKey) await deleteR2Object(previousKey);
+      return;
+    }
+
+    const folder = itemImageFolder(organizationId, itemId);
+
+    if (!imageKey.startsWith(`${folder}/`)) {
+      throw new BadRequestException('La imagen no pertenece a este artículo');
+    }
+
+    // R2 no permite fijar el tamaño en la firma del PUT: se comprueba aquí.
+    const size = await objectSize(imageKey);
+    const maxBytes = maxUploadBytes();
+
+    if (size !== null && size > maxBytes) {
+      await deleteR2Object(imageKey);
+      throw new BadRequestException(
+        `La imagen supera el máximo de ${Math.round(maxBytes / 1024 / 1024)} MB`,
+      );
+    }
+
+    await this.prisma.item.update({
+      where: { id: itemId },
+      data: {
+        imageKey,
+        imageUrl: publicUrlForKey(imageKey),
+        // Nombre legible en la base; en R2 el objeto va hasheado.
+        imageName: imageSnapshotName(name),
+      },
+    });
+
+    // Solo una imagen por artículo: la anterior deja de existir en el bucket.
+    if (previousKey) await deleteR2Object(previousKey);
+  }
+
+  /** Prefijo del SKU: `X` + dos letras de la categoría (XVA, XBE…). */
+  private articleSkuPrefix(categoryName: string | null): string {
+    return `X${categoryInitials(categoryName ?? 'General', 2)}`;
+  }
+
+  /**
+   * Siguiente SKU del artículo: `XVA100`, `XVA101`…
+   *
+   * El consecutivo es por organización y prefijo, y arranca en 100. Se calcula
+   * con el mayor número ya usado para no reutilizar códigos.
+   */
+  private async generateArticleSku(
+    organizationId: string | null,
+    categoryName: string | null,
+    excludeId?: string,
+  ): Promise<string> {
+    const prefix = this.articleSkuPrefix(categoryName);
+    const pattern = new RegExp(`^${prefix}(\\d+)$`, 'i');
+
+    const existing = await this.prisma.item.findMany({
+      where: {
+        organizationId,
+        sku: { startsWith: prefix, mode: 'insensitive' },
+      },
+      select: { sku: true },
+    });
+
+    let max = 99;
+
+    for (const row of existing) {
+      const match = row.sku?.match(pattern);
+      if (match) {
+        max = Math.max(max, Number(match[1]));
+      }
+    }
+
+    let next = max + 1;
+    let sku = `${prefix}${next}`;
+
+    while (await this.itemSkuExists(organizationId, sku, excludeId)) {
+      next += 1;
+      sku = `${prefix}${next}`;
+    }
+
+    return sku;
+  }
+
+  private async itemSkuExists(
+    organizationId: string | null,
+    sku: string,
+    excludeId?: string,
+  ) {
+    const existing = await this.prisma.item.findFirst({
+      where: {
+        organizationId,
+        sku: { equals: sku, mode: 'insensitive' },
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+
+    return Boolean(existing);
+  }
+
   async deactivate(organizationId: string | null, id: string) {
-    const product = await this.getProduct(organizationId, id);
+    const item = await this.getItem(organizationId, id);
 
     const usedInCombos = await this.prisma.comboComponent.count({
       where: {
-        componentProductId: product.id,
+        componentItemId: item.id,
         combo: { isActive: true },
       },
     });
@@ -432,8 +667,8 @@ export class ProductsService {
       );
     }
 
-    await this.prisma.product.update({
-      where: { id: product.id },
+    await this.prisma.item.update({
+      where: { id: item.id },
       data: { isActive: false },
     });
 
@@ -446,16 +681,16 @@ export class ProductsService {
 
   async createVariant(
     organizationId: string | null,
-    productId: string,
+    itemId: string,
     dto: CreateVariantDto,
   ) {
-    const product = await this.getProduct(organizationId, productId);
+    const item = await this.getItem(organizationId, itemId);
     const name = dto.name.trim();
-    await this.assertVariantNameAvailable(product.id, name);
+    await this.assertVariantNameAvailable(item.id, name);
 
-    const variant = await this.prisma.productVariant.create({
+    const variant = await this.prisma.itemVariant.create({
       data: {
-        productId: product.id,
+        itemId: item.id,
         name,
         priceAdjust: toMoney(dto.priceAdjust ?? 0),
         recipeFactor: new Prisma.Decimal(dto.recipeFactor ?? 1),
@@ -464,29 +699,29 @@ export class ProductsService {
       },
     });
 
-    return this.findOne(organizationId, product.id).then((detail) => ({
-      product: detail,
+    return this.findOne(organizationId, item.id).then((detail) => ({
+      item: detail,
       variant,
     }));
   }
 
   async updateVariant(
     organizationId: string | null,
-    productId: string,
+    itemId: string,
     variantId: string,
     dto: UpdateVariantDto,
   ) {
-    const product = await this.getProduct(organizationId, productId);
-    const variant = await this.getVariant(product.id, variantId);
+    const item = await this.getItem(organizationId, itemId);
+    const variant = await this.getVariant(item.id, variantId);
 
     if (dto.name !== undefined) {
       const name = dto.name.trim();
       if (name !== variant.name) {
-        await this.assertVariantNameAvailable(product.id, name, variant.id);
+        await this.assertVariantNameAvailable(item.id, name, variant.id);
       }
     }
 
-    const updated = await this.prisma.productVariant.update({
+    const updated = await this.prisma.itemVariant.update({
       where: { id: variant.id },
       data: {
         name: dto.name?.trim(),
@@ -503,19 +738,19 @@ export class ProductsService {
       },
     });
 
-    return this.findOne(organizationId, product.id).then((detail) => ({
-      product: detail,
+    return this.findOne(organizationId, item.id).then((detail) => ({
+      item: detail,
       variant: updated,
     }));
   }
 
   async deactivateVariant(
     organizationId: string | null,
-    productId: string,
+    itemId: string,
     variantId: string,
   ) {
-    const product = await this.getProduct(organizationId, productId);
-    const variant = await this.getVariant(product.id, variantId);
+    const item = await this.getItem(organizationId, itemId);
+    const variant = await this.getVariant(item.id, variantId);
 
     const usedInCombos = await this.prisma.comboComponent.count({
       where: {
@@ -530,7 +765,7 @@ export class ProductsService {
       );
     }
 
-    await this.prisma.productVariant.update({
+    await this.prisma.itemVariant.update({
       where: { id: variant.id },
       data: { isActive: false },
     });
@@ -544,18 +779,18 @@ export class ProductsService {
 
   async createExtra(
     organizationId: string | null,
-    productId: string,
+    itemId: string,
     dto: CreateExtraDto,
   ) {
-    const product = await this.getProduct(organizationId, productId);
+    const item = await this.getItem(organizationId, itemId);
     const ingredients = await this.resolveExtraIngredients(
       organizationId,
       dto.ingredients ?? [],
     );
 
-    const extra = await this.prisma.productExtra.create({
+    const extra = await this.prisma.itemExtra.create({
       data: {
-        productId: product.id,
+        itemId: item.id,
         name: dto.name.trim(),
         price: toMoney(dto.price),
         isActive: dto.isActive ?? true,
@@ -568,21 +803,21 @@ export class ProductsService {
       },
     });
 
-    return this.findOne(organizationId, product.id).then((detail) => ({
-      product: detail,
+    return this.findOne(organizationId, item.id).then((detail) => ({
+      item: detail,
       extra,
     }));
   }
 
   async updateExtra(
     organizationId: string | null,
-    productId: string,
+    itemId: string,
     extraId: string,
     dto: UpdateExtraDto,
   ) {
-    const product = await this.getProduct(organizationId, productId);
-    const extra = await this.prisma.productExtra.findFirst({
-      where: { id: extraId, productId: product.id },
+    const item = await this.getItem(organizationId, itemId);
+    const extra = await this.prisma.itemExtra.findFirst({
+      where: { id: extraId, itemId: item.id },
     });
 
     if (!extra) {
@@ -596,12 +831,12 @@ export class ProductsService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       if (ingredients) {
-        await tx.productExtraIngredient.deleteMany({
-          where: { productExtraId: extra.id },
+        await tx.itemExtraIngredient.deleteMany({
+          where: { itemExtraId: extra.id },
         });
       }
 
-      return tx.productExtra.update({
+      return tx.itemExtra.update({
         where: { id: extra.id },
         data: {
           name: dto.name?.trim(),
@@ -621,27 +856,27 @@ export class ProductsService {
       });
     });
 
-    return this.findOne(organizationId, product.id).then((detail) => ({
-      product: detail,
+    return this.findOne(organizationId, item.id).then((detail) => ({
+      item: detail,
       extra: updated,
     }));
   }
 
   async deactivateExtra(
     organizationId: string | null,
-    productId: string,
+    itemId: string,
     extraId: string,
   ) {
-    const product = await this.getProduct(organizationId, productId);
-    const extra = await this.prisma.productExtra.findFirst({
-      where: { id: extraId, productId: product.id },
+    const item = await this.getItem(organizationId, itemId);
+    const extra = await this.prisma.itemExtra.findFirst({
+      where: { id: extraId, itemId: item.id },
     });
 
     if (!extra) {
       throw new NotFoundException('Extra no encontrado');
     }
 
-    await this.prisma.productExtra.update({
+    await this.prisma.itemExtra.update({
       where: { id: extra.id },
       data: { isActive: false },
     });
@@ -655,24 +890,24 @@ export class ProductsService {
 
   async replaceExclusions(
     organizationId: string | null,
-    productId: string,
+    itemId: string,
     exclusions: ExclusionInputDto[],
   ) {
-    const product = await this.getProduct(organizationId, productId);
+    const item = await this.getItem(organizationId, itemId);
     const normalized = await this.validateExclusions(
       organizationId,
       exclusions,
     );
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.productIngredientExclusion.deleteMany({
-        where: { productId: product.id },
+      await tx.itemIngredientExclusion.deleteMany({
+        where: { itemId: item.id },
       });
 
       if (normalized.length > 0) {
-        await tx.productIngredientExclusion.createMany({
+        await tx.itemIngredientExclusion.createMany({
           data: normalized.map((exclusion) => ({
-            productId: product.id,
+            itemId: item.id,
             ingredientId: exclusion.ingredientId,
             label: exclusion.label,
           })),
@@ -680,17 +915,17 @@ export class ProductsService {
       }
     });
 
-    return this.findOne(organizationId, product.id);
+    return this.findOne(organizationId, item.id);
   }
 
   async replaceComboComponents(
     organizationId: string | null,
-    productId: string,
+    itemId: string,
     components: ComboComponentInputDto[],
   ) {
-    const product = await this.getProduct(organizationId, productId);
+    const item = await this.getItem(organizationId, itemId);
 
-    if (!product.isCombo) {
+    if (!item.isCombo) {
       throw new BadRequestException(
         'Marca el artículo como combo antes de configurar sus componentes',
       );
@@ -704,44 +939,44 @@ export class ProductsService {
 
     const normalized = await this.validateComboComponents(
       organizationId,
-      product.id,
+      item.id,
       components,
     );
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.comboComponent.deleteMany({ where: { comboId: product.id } });
+      await tx.comboComponent.deleteMany({ where: { comboId: item.id } });
       await tx.comboComponent.createMany({
         data: normalized.map((component) => ({
-          comboId: product.id,
-          componentProductId: component.componentProductId,
+          comboId: item.id,
+          componentItemId: component.componentItemId,
           componentVariantId: component.componentVariantId,
           quantity: component.quantity,
         })),
       });
     });
 
-    return this.findOne(organizationId, product.id);
+    return this.findOne(organizationId, item.id);
   }
 
   // --------------------------------------------------------------------------
   // Validaciones
   // --------------------------------------------------------------------------
 
-  private async getProduct(organizationId: string | null, id: string) {
-    const product = await this.prisma.product.findFirst({
+  private async getItem(organizationId: string | null, id: string) {
+    const item = await this.prisma.item.findFirst({
       where: { id, organizationId },
     });
 
-    if (!product) {
+    if (!item) {
       throw new NotFoundException('Artículo no encontrado');
     }
 
-    return product;
+    return item;
   }
 
-  private async getVariant(productId: string, variantId: string) {
-    const variant = await this.prisma.productVariant.findFirst({
-      where: { id: variantId, productId },
+  private async getVariant(itemId: string, variantId: string) {
+    const variant = await this.prisma.itemVariant.findFirst({
+      where: { id: variantId, itemId },
     });
 
     if (!variant) {
@@ -753,7 +988,10 @@ export class ProductsService {
 
   private async assertCategory(organizationId: string | null, categoryId: string) {
     const category = await this.prisma.category.findFirst({
-      where: { id: categoryId, organizationId },
+      where: {
+        id: categoryId,
+        OR: [{ organizationId }, { organizationId: null, isCore: true }],
+      },
     });
 
     if (!category) {
@@ -764,6 +1002,12 @@ export class ProductsService {
       throw new BadRequestException('La categoría está desactivada');
     }
 
+    if (category.kind !== CategoryKind.ARTICLE) {
+      throw new BadRequestException(
+        'La categoría no es de artículos del catálogo',
+      );
+    }
+
     return category;
   }
 
@@ -772,7 +1016,7 @@ export class ProductsService {
     sku: string,
     excludeId?: string,
   ) {
-    const existing = await this.prisma.product.findFirst({
+    const existing = await this.prisma.item.findFirst({
       where: {
         organizationId,
         sku: { equals: sku, mode: 'insensitive' },
@@ -787,13 +1031,13 @@ export class ProductsService {
   }
 
   private async assertVariantNameAvailable(
-    productId: string,
+    itemId: string,
     name: string,
     excludeId?: string,
   ) {
-    const existing = await this.prisma.productVariant.findFirst({
+    const existing = await this.prisma.itemVariant.findFirst({
       where: {
-        productId,
+        itemId,
         name: { equals: name, mode: 'insensitive' },
         ...(excludeId ? { id: { not: excludeId } } : {}),
       },
@@ -854,19 +1098,19 @@ export class ProductsService {
   ) {
     const seen = new Set<string>();
     const result: Array<{
-      componentProductId: string;
+      componentItemId: string;
       componentVariantId: string | null;
       quantity: number;
     }> = [];
 
     for (const item of input) {
-      if (comboId && item.productId === comboId) {
+      if (comboId && item.itemId === comboId) {
         throw new BadRequestException(
           'Un combo no puede contenerse a sí mismo',
         );
       }
 
-      const key = `${item.productId}:${item.variantId ?? ''}`;
+      const key = `${item.itemId}:${item.variantId ?? ''}`;
       if (seen.has(key)) {
         throw new BadRequestException(
           'Los componentes del combo no pueden repetirse',
@@ -874,8 +1118,8 @@ export class ProductsService {
       }
       seen.add(key);
 
-      const component = await this.prisma.product.findFirst({
-        where: { id: item.productId, organizationId },
+      const component = await this.prisma.item.findFirst({
+        where: { id: item.itemId, organizationId },
       });
 
       if (!component) {
@@ -895,8 +1139,8 @@ export class ProductsService {
       }
 
       if (item.variantId) {
-        const variant = await this.prisma.productVariant.findFirst({
-          where: { id: item.variantId, productId: component.id },
+        const variant = await this.prisma.itemVariant.findFirst({
+          where: { id: item.variantId, itemId: component.id },
         });
 
         if (!variant) {
@@ -907,7 +1151,7 @@ export class ProductsService {
       }
 
       result.push({
-        componentProductId: component.id,
+        componentItemId: component.id,
         componentVariantId: item.variantId ?? null,
         quantity: item.quantity ?? 1,
       });

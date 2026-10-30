@@ -63,7 +63,7 @@ class RowError extends Error {
 export class CatalogImportService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async importProducts(
+  async importItems(
     organizationId: string | null,
     csv: string,
     dryRun = false,
@@ -168,7 +168,7 @@ export class CatalogImportService {
 
         if (existing) {
           if (!dryRun) {
-            await this.prisma.product.update({
+            await this.prisma.item.update({
               where: { id: existing.id },
               data: {
                 name,
@@ -183,7 +183,7 @@ export class CatalogImportService {
           result.updated += 1;
         } else {
           if (!dryRun) {
-            await this.prisma.product.create({
+            await this.prisma.item.create({
               data: {
                 organizationId,
                 name,
@@ -366,7 +366,7 @@ export class CatalogImportService {
     name: string,
   ) {
     if (sku) {
-      return this.prisma.product.findFirst({
+      return this.prisma.item.findFirst({
         where: {
           organizationId,
           sku: { equals: sku, mode: 'insensitive' },
@@ -375,7 +375,7 @@ export class CatalogImportService {
       });
     }
 
-    return this.prisma.product.findFirst({
+    return this.prisma.item.findFirst({
       where: {
         organizationId,
         name: { equals: name, mode: 'insensitive' },
